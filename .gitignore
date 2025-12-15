@@ -1,0 +1,9 @@
+DV_reports/
+SLURM_output/
+__pycache__/
+known_toi_data/
+saving_MCMC_plots/
+saving_all_planets.csv
+toi_data/
+model_TESS.pth
+final_mdwarf_params.csv

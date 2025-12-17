@@ -141,7 +141,7 @@ def main(file_num):
 
     # In[25]:
 
-    all_tois = pd.read_csv('./PS_2025.08.05_10.28.29.csv', skiprows = 104 )
+    all_tois = pd.read_csv('../data/PS_2025.08.05_10.28.29.csv', skiprows = 104 )
 
     gaia_ids = np.unique([all_tois['gaia_id'][x][9:] for x in range(len(all_tois))])
 
@@ -161,7 +161,7 @@ def main(file_num):
     print('sector ', sector )
     if sector in sectors_south:
 #         gaia_ids = list(star_sector_df_GAIA[star_sector_df_GAIA['S'+str(sector)]==True]['GAIA_ID'].astype(str))
-        with open(f'./sector_executable_files/run_tois_new_s{sector}.sh', 'w') as rsh:
+        with open(f'../sector_executable_files/run_tois_new_s{sector}.sh', 'w') as rsh:
 
             for line in urllib.request.urlopen(file['href']):
                 vvv+=1
@@ -179,7 +179,7 @@ def main(file_num):
                         continue
                     gaia_str = line_str.split('gaiaid-')[-1].split('-')[0]
                     if gaia_str in gaia_ids:
-                        making_new_line_str = "./known_toi_data/"+line_str.split(' ')[4][1:]
+                        making_new_line_str = "../known_toi_data/"+line_str.split(' ')[4][1:]
                         lst_line_str = line_str.split(' ')
                         new_line_str = lst_line_str[0]+' '+lst_line_str[1]+' '+lst_line_str[2]+' '+lst_line_str[3]+' '+making_new_line_str+' '+lst_line_str[5]
                         print('new line', new_line_str)

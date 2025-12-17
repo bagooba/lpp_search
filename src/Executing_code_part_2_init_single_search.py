@@ -141,7 +141,7 @@ if __name__ == "__main__":
 
     time1 = tm.time()
     
-    target_files = sorted(glob.glob('./toi_data/target_*data'))
+    target_files = sorted(glob.glob('../toi_data/target_*data'))
 
     print('now running pools')
 #     print('factor: ', file_factor, ', running files_nums:', file_factor*8 , '-', min(len(target_files), (file_factor+1)*8))

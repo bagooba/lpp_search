@@ -76,7 +76,7 @@ def main(target,save_things = True):
         catalog_df = pd.read_csv(target+'/tic_star_parameters.csv')
 
     else:
-        all_star_data = pd.read_csv('./final_mdwarf_params.csv', header = 0)#
+        all_star_data = pd.read_csv('../data/final_mdwarf_params.csv', header = 0)#
         print('IDs', ticid, gaiaID)
         catalog_df = get_catalog_info(ticid, df = all_star_data, rtrn_df = True, gaia_id = gaiaID)
         if len(catalog_df)>0:
@@ -180,7 +180,7 @@ def main(target,save_things = True):
                 print('checking new_planet_df too ', new_planet_df, )
 
         if save_things:
-            all_planets_filename = './saving_all_planets.csv'
+            all_planets_filename = '../data/saving_all_planets.csv'
             new_planet_df.loc[len(new_planet_df.index)] = column_vals
             new_planet_df.to_csv(target+'/tic-'+str(ticid)+'_planets.csv', index = False, mode = 'a')
     # os.path.exists():
@@ -209,7 +209,7 @@ if __name__ == "__main__":
 #     # file_num +=1000
 
     time1 = tm.time()
-    target_files = sorted(glob.glob('./toi_data/*check'))
+    target_files = sorted(glob.glob('../toi_data/*check'))
 # 
     # pool = mpl.Pool()
 

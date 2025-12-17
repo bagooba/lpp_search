@@ -169,7 +169,7 @@ def main(file):
 
     # In[25]:
 
-    all_tois = pd.read_csv('../PS_2025.11.17_10.16.43.csv', skiprows = 105)#.dropna()
+    all_tois = pd.read_csv('../data/PS_2025.11.17_10.16.43.csv', skiprows = 105)#.dropna()
 
     gaia_ids = [all_tois['gaia_dr3_id'][x][9:] for x in range(len(all_tois)) if type(x) == str]
 
@@ -203,7 +203,7 @@ def main(file):
                     continue
                 gaia_str = line_str.split('gaiaid-')[-1].split('-')[0]
                 if gaia_str in gaia_ids:
-                    making_new_line_str = "'./known_toi_data/"+line_str.split(' ')[4][1:]
+                    making_new_line_str = "../known_toi_data/"+line_str.split(' ')[4][1:]
                     lst_line_str = line_str.split(' ')
                     new_line_str = lst_line_str[0]+' '+lst_line_str[1]+' '+lst_line_str[2]+' '+lst_line_str[3]+' '+making_new_line_str+' '+lst_line_str[5]
                     print('abs', new_line_str)

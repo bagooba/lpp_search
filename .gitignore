@@ -7,3 +7,6 @@ saving_all_planets.csv
 toi_data/
 *model_TESS.pth
 *final_mdwarf_params.csv
+test/.ipynb_checkpoints/
+test/.trash.txt
+

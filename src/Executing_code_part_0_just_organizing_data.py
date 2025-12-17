@@ -95,7 +95,7 @@ def main(target):
     #         else: 
     #             catalog_df = []
     #             continue
-        all_star_data = pd.read_csv('./final_mdwarf_params.csv', header = 0)#
+        all_star_data = pd.read_csv('../data/final_mdwarf_params.csv', header = 0)#
         print('IDs', ticid, gaiaID)
         catalog_df = get_catalog_info(ticid, df = all_star_data, rtrn_df = True, gaia_id = gaiaID)
         if len(catalog_df)>0:
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     # file_num +=1000
 
     time1 = tm.time()
-    target_files = sorted(glob.glob('./toi_data/target_*'))
+    target_files = sorted(glob.glob('../toi_data/target_*'))
     print('num files', len(target_files))
     
     # for result in pool.imap(main, [file for file in files]):

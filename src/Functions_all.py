@@ -82,12 +82,12 @@ def mkdir_if_doesnt_exist(outdir, str_new_dir_name):
 def mk_target_dir_mv_fits_file(fits_file_with_GAIAid, sector_df):
     gaia_ID = fits_file_with_GAIAid.split('-')[2]
     ticid = int(sector_df[sector_df['GAIA_ID'].astype(str)==gaia_ID]['TICID'])
-    mkdir_if_doesnt_exist('./Search_target_data/', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
-    os.rename(fits_file_with_GAIAid, './Search_target_data/target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID)+'/'+fits_file_with_GAIAid.split('/')[-1])
+    mkdir_if_doesnt_exist('../Search_target_data/', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
+    os.rename(fits_file_with_GAIAid, '../Search_target_data/target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID)+'/'+fits_file_with_GAIAid.split('/')[-1])
     
 
 
-LDC_for_quadratic = pd.read_csv('./LDC_files/table15.dat', 
+LDC_for_quadratic = pd.read_csv('../data/LDC_params/table15.dat', 
                                 header = None, 
                                 sep="\s+", index_col=None,
                                names = ['logg', 'Teff', 'z','L/HP', 'aLSM', 'bLSM',
@@ -142,7 +142,7 @@ def get_catalog_info(ticid, df = False, rtrn_df = False, gaia_id = False):
     except Exception as err:
         print('this is error: ', err)
         
-        ctlfile = './final_mdwarf_params.csv'
+        ctlfile = '../data/final_mdwarf_params.csv'
         mdwarfs = pd.read_csv(ctlfile, iterator =True, chunksize = 100000, index_col=None, header = 0)
         new_df = pd.concat(
             [chunk[chunk['TICID'].astype(int) == int(ticid)] 
@@ -158,7 +158,7 @@ def get_catalog_info(ticid, df = False, rtrn_df = False, gaia_id = False):
 
     if len(new_df) == 0:
 #                 print('we have a serious problem')
-        ctlfile = './final_mdwarf_params.csv'
+        ctlfile = '../data/final_mdwarf_params.csv'
         mdwarfs = pd.read_csv(ctlfile, iterator =True, chunksize = 100000, index_col=None, header = 0)
         new_df = pd.concat(
             [chunk[chunk['TICID'].astype(int) == ticid] 
@@ -519,7 +519,7 @@ def get_data(ticid_directory, flux_type='APER_', PL = 'TGLC', verbose = False, c
 # In[43]:
 
 
-model_path = './model_TESS.pth'
+model_path = '../model_TESS.pth'
 
 
 def make_LightKurveObject(time, flux, flux_err):
@@ -3120,7 +3120,7 @@ def general_mcmc_function(time, flux, unc, t0, other_pars, type_fn, data_file = 
 
     if len(target_source)<3:
         target_source = data_file.split('/')
-    fileName = './saving_MCMC_plots/'+target_source[-1][:-10]+xxx[0]+'_'+xxx[1][:3]+add_str+'.pdf'
+    fileName = '../saving_MCMC_plots/'+target_source[-1][:-10]+xxx[0]+'_'+xxx[1][:3]+add_str+'.pdf'
 
     ticid = target_source[-1].split('tic-')[1].split('_')[0]
     print('saving all to csv')
@@ -4119,8 +4119,8 @@ CAD_FFI = 30.
 
 def creating_first_DV_report_page(ticid, data_filename, planet_df, catalog_df, intransit=[], APER=False, eleanor=False, **other_pipelines):
 
-    with PdfPages('./DV_reports/'+os.path.dirname(data_filename).split('/')[-1][:-6]+'.pdf') as pdf: #+str(planet_num)+'.pdf') as pdf:
-        print('working on ' + './DV_reports/'+os.path.dirname(data_filename).split('/')[-1][:-6]+'.pdf')#')#+str(planet_num)+'.pdf')
+    with PdfPages('../DV_reports/'+os.path.dirname(data_filename).split('/')[-1][:-6]+'.pdf') as pdf: #+str(planet_num)+'.pdf') as pdf:
+        print('working on ' + '../DV_reports/'+os.path.dirname(data_filename).split('/')[-1][:-6]+'.pdf')#')#+str(planet_num)+'.pdf')
 
         df = pd.read_csv(data_filename)
         time, flux, err, trend, raw, raw_err = [np.array(df[col]) for col in ['TIME', 'FLUX', 'FLUX_ERR', 'FLUX_TREND', 'RAW_FLUX', 'RAW_FLUX_ERR']]

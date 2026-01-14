@@ -13,8 +13,10 @@
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=0-126 # for 126 files
+#SBATCH --array=0-116 # for 116 files
 
+# Change to the directory containing the Python script
+cd ../src
 module load miniconda3
 source activate /users/malharris/miniconda3/envs/envRunningInJupyter
 

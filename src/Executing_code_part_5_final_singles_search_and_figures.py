@@ -52,9 +52,7 @@ warnings.filterwarnings("ignore")
 display(HTML("<style>.container { width:95% !important; }</style>"))
 
 from Functions_all import *
-
-
-
+import config as con
 # ###LET'S DO THIS!!!!
 
 
@@ -64,6 +62,7 @@ def main(target,save_things = True):
     num+=1
     ticid  = int(target.split('/')[-1].split('_')[1].split('-')[1])
     print(ticid)
+    con.TICID = ticid
     gaiaID = str(target.split('/')[-1].split('_')[2].split('-')[-1])
     print('running ticid', ticid)
 
@@ -136,17 +135,26 @@ def main(target,save_things = True):
                 
                 print('single planet fit')
                 
-                snew_params_df = pymc_new_general_function(time, flux, flux_err, planet['T0'], [planet['Tdur'], catalog_df[['aLSM', 'bLSM']].values[0].astype(float), planet['depth']], 'Single', target)
-            if len(snew_params_df):
+                snew_params_df, conv, conv_attempt = pymc_new_general_function(time, flux, flux_err, planet['T0'], [planet['Tdur'], catalog_df[['aLSM', 'bLSM']].values[0].astype(float), planet['depth']], 'Single', target)
+                if len(snew_params_df)>0:
 
-                ab = catalog_df[['aLSM', 'bLSM']].values[0].astype(float)
-                print('AB', ab)
-                u1, u2, = ab
+                    ab = catalog_df[['aLSM', 'bLSM']].values[0].astype(float)
+                    print('AB', ab)
+                    u1, u2, = ab
 
-                T0, per, depth, tdur, rp_rs, cosi, a, b, Norm, Win, Tau, SNR = snew_params_df.loc['t0', 'mean'], snew_params_df.loc['Per', 'mean'],   snew_params_df.loc['depth', 'mean'],          snew_params_df.loc['dur', 'mean'], snew_params_df.loc['rp_rs', 'mean'], snew_params_df.loc['cosi', 'mean'],           snew_params_df.loc['a_rs', 'mean'], snew_params_df.loc['b', 'mean'],     snew_params_df.loc['norm', 'mean'],           snew_params_df.loc['win', 'mean'],   snew_params_df.loc['tau', 'mean'],   snew_params_df.loc['SNR', 'mean']
-                
-                
-                new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
+
+
+                    T0, per, depth, tdur, rp_rs, cosi, a, b, Norm, Win, Tau, SNR = snew_params_df.loc['t0', 'mean'], snew_params_df.loc['Per', 'mean'],   snew_params_df.loc['depth', 'mean'],          snew_params_df.loc['dur', 'mean'], snew_params_df.loc['rp_rs', 'mean'], snew_params_df.loc['cosi', 'mean'],           snew_params_df.loc['a_rs', 'mean'], snew_params_df.loc['b', 'mean'],     snew_params_df.loc['norm', 'mean'],           snew_params_df.loc['win', 'mean'],   snew_params_df.loc['tau', 'mean'],   snew_params_df.loc['SNR', 'mean']
+
+                    print('checking convergence 5')
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[T0], 'per':[per], 'depth':[depth], 'converged': [conv], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0, 5))+'_Yconv_single_final.csv')
+
+                    new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
+
+                else:
+                    print('checking convergence 6')
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[planet['T0']], 'per':[np.nan], 'depth':[planet['depth']], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(planet['T0'], 5))+'_Nconv_single_final.csv')
+
 
             elif planet['Ptype'] == 'Period': 
 #                 print('periodic planet fit', planet)
@@ -159,17 +167,28 @@ def main(target,save_things = True):
                 else:
                     keep = list(pparams_df.loc['Per', 'mean']<25)[-1]
 
-                if (len(pparams_df)>0) and keep:
-                    pnew_params = pparams_df
-                else:
+#                 if (len(pparams_df)>0) and keep:
+#                     pnew_params = pparams_df
+#                 else:
 
-                    pnew_params_df = pymc_new_general_function(time, flux, flux_err, planet['T0'], [planet['period'], catalog_df[['aLSM', 'bLSM']].values[0].astype(float), planet['depth']], 'Periodic')
+                pnew_params_df, conv, conv_attempt = pymc_new_general_function(time, flux, flux_err, planet['T0'], [planet['period'], catalog_df[['aLSM', 'bLSM']].values[0].astype(float), planet['depth']], 'Periodic')
                     
-                if len(pnew_params_df):
+                if len(pnew_params_df)>0:
                     
-                    T0, period_, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR = pnew_params_df.loc['t0', 'mean'], pnew_params_df.loc['Per', 'mean'],   pnew_params_df.loc['depth', 'mean'],                  pnew_params_df.loc['dur', 'mean'], pnew_params_df.loc['rp_rs', 'mean'], pnew_params_df.loc['cosi', 'mean'],                   pnew_params_df.loc['a_rs', 'mean'], pnew_params_df.loc['b', 'mean'],     catalog_df[['aLSM', 'bLSM']].values[0].astype(float), pnew_params_df.loc['norm', 'mean'], pnew_params_df.loc['win', 'mean'],   pnew_params_df.loc['tau', 'mean'],                    pnew_params_df.loc['SNR', 'mean']
-                    
+                    T0, period_, depth, tdur, rp_rs, cosi, a, b, ab, Norm, Win, Tau, SNR = pnew_params_df.loc['t0', 'mean'], pnew_params_df.loc['Per', 'mean'],   pnew_params_df.loc['depth', 'mean'],                  pnew_params_df.loc['dur', 'mean'], pnew_params_df.loc['rp_rs', 'mean'], pnew_params_df.loc['cosi', 'mean'],                   pnew_params_df.loc['a_rs', 'mean'], pnew_params_df.loc['b', 'mean'],     catalog_df[['aLSM', 'bLSM']].values[0].astype(float), pnew_params_df.loc['norm', 'mean'], pnew_params_df.loc['win', 'mean'],   pnew_params_df.loc['tau', 'mean'],                    pnew_params_df.loc['SNR', 'mean']
+                    u1, u2 = ab
                     new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
+                    
+                    print('checking convergence 7')
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[T0], 'per':[period_], 'depth':[depth], 'converged': [conv], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0, 5))+'_Yconv_per_final.csv')
+
+                    new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
+
+                else:
+                    print('checking convergence 8')
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[planet['T0']], 'per':[planet['period']], 'depth':[planet['depth']], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(planet['T0'], 5))+'_Nconv_per_final.csv')
+
+
             else:
                 print('something is wrong')
                 print(planet['Ptype'])

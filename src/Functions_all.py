@@ -16,12 +16,12 @@ import itertools
 import sys
 # import gerbls
 
-import numpy        as np
-import pandas       as pd
-import time         as tm 
-import lightkurve   as lk
-import deep_transit as dt
-
+import numpy           as np
+import pandas          as pd
+import time            as tm 
+import lightkurve      as lk
+import deep_transit    as dt
+import multiprocessing as mp
 # import mr_forecast as mr
 
 import matplotlib                      as mpl
@@ -56,6 +56,8 @@ import pytensor.tensor as pt
 import arviz as az
 from pytensor.graph import Op, Apply
 
+from pytensor import config as pt_config
+
 
 # import eleanor
 
@@ -63,7 +65,7 @@ import warnings
 warnings.filterwarnings("ignore")
 display(HTML("<style>.container { width:95% !important; }</style>"))
 
-
+import config as con
 # In[32]:
 
 
@@ -773,6 +775,7 @@ def order_of_magnitude(number):
 
 
 def checking_last_BLS_power_for_artificial_inflation(power_results):
+    max_indx = 0
     if max(power_results) == power_results[-1]:
     
         max_indx = 1
@@ -782,10 +785,10 @@ def checking_last_BLS_power_for_artificial_inflation(power_results):
                 max_indx+=1
             else:
                 break
-        return np.arange(len(power_results)-max_indx)
-    else:
+    if max_indx == 0 or max_indx == len(power_results):
         return np.arange(len(power_results))
-        
+    else:        
+        return np.arange(len(power_results)-max_indx)
 
 
 def catching_periods_repeated_and_offset(per, t0, per_array, t0_array, rep_indxs):
@@ -950,8 +953,11 @@ def using_BLS_to_find_periodic_signals(time, flux, intransit, verbose = True, sh
         start = tm.time()
 
         model     = BoxLeastSquares(time_new, flux_new)
-        max_per   = np.min([100., (max(time_new)-min(time_new))*3/5])
-        results   = model.autopower(durations, frequency_factor = np.max([10, (10**(freq_fact_exp-1))/2]), maximum_period=max_per)#, objective='snr', )
+        max_per   = np.min([100., (max(time_new)-min(time_new))*4/5])
+        
+        max_dur   = np.min([0.5,  (max(time_new)-min(time_new))*2/5])
+        
+        results   = model.autopower(durations[durations<max_dur], frequency_factor = np.max([10, (10**(freq_fact_exp-1))/2]), maximum_period=max_per)#, objective='snr', )
         
         end = tm.time()    
                 
@@ -1130,7 +1136,7 @@ def using_BLS_to_find_periodic_signals(time, flux, intransit, verbose = True, sh
 #                 intransit = np.logical_or(intransit, transit_mask(time, results.period[index], (2*results.duration[index]/24)+(1/6), results.transit_time[index]))
             intransit = np.logical_or(intransit, transit_mask(time, period, duration+(1/6), t0))
 
-            depths.append(1-depth)
+            depths.append(min([1-depth, depth]))
             periods.append(period)
             T0.append(t0)
             Tdur.append(duration)
@@ -1777,12 +1783,18 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     start = tm.time()
 
     model     = BoxLeastSquares(time_new, flux_new)
-    max_per   = np.min([50., (max(time_new)-min(time_new))*3/5])
-    results   = model.autopower(durations, frequency_factor = np.max([10, (10**(freq_fact_exp-1))/2]), maximum_period=max_per)#, objective='snr', )
+    max_per   = np.min([50., (max(time_new)-min(time_new))*4/5])
+    max_dur   = np.min([0.5,  (max(time_new)-min(time_new))/2])
+        
+
+    results   = model.autopower(durations[durations<max_dur], frequency_factor = np.max([10, (10**(freq_fact_exp-1))/2]), maximum_period=max_per)#, objective='snr', )
 
     end = tm.time()    
 
     my_median = running_median(results.power, kernel = min((25, int(len(time_new)/10))))
+    
+    
+#     print('my median', my_median)
     results['power_final'] = results.power - my_median
 
     check_pwr_final_indxs = checking_last_BLS_power_for_artificial_inflation(results['power_final'])
@@ -1801,13 +1813,20 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     sde  = (results['power_final'][index] - np.median(results['power_final'])) / np.std(results['power_final'])
     sde2 = (sorted_results[-1] - sorted_results[-2] ) / np.std(sorted_results[:-2])
 
-    if verbose:
-        print(f"Candidate: P={period:.4f} d, SDE={sde:.2f}, SDE2={sde2:.2f}")
+#     if verbose:
+    print(f"Candidate: P={period:.4f} d, SDE={sde:.2f}, SDE2={sde2:.2f}, min_SDE={min_SDE:.2f}")
 
     
-    if (sde < min_SDE):# or (sde2 < 0.5):
+    if (sde < min_SDE) or (sde2 < 0.2):
         print("Stopping: SDE below threshold.")
         return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
+
+    try:
+        stats = model.compute_stats(period, duration, t0)
+        print('number transit times in baseline:', len(stats["transit_times"][stats["per_transit_count"]>0]), ' \nnumber of point in each transit: ', stats["per_transit_count"][stats["per_transit_count"]>0], '\ntransit likelihood:', stats["per_transit_log_likelihood"][stats["per_transit_count"]>0])
+
+    except ValueError as err:
+        print('getting error: ', err)
 
     if plot: # and np.ceil(results.duration[index]/np.nanmedian(np.diff(time)))>=3:
         plt.figure(figsize = (10, 6))
@@ -1951,6 +1970,7 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
 
     
+
 def fitting_periodic_planets(time, flux, flux_err, pers, t0s, depths, ab, intransit, verbose=True, save_phaseFold = False, total_time = True, data_file = '.', chain_diff = 0):
 #             print('period', periods_multis[jjj])
     periods  = []
@@ -1968,16 +1988,25 @@ def fitting_periodic_planets(time, flux, flux_err, pers, t0s, depths, ab, intran
     print('len(t0s)', len(t0s))
     for iii in range(len(t0s)): 
 
-        params_df = pymc_new_general_function(time, flux, flux_err, t0s[iii], [pers[iii], ab, depths[iii]], 'Periodic')
+        params_df, conv, conv_attempt = pymc_new_general_function(time, flux, flux_err, t0s[iii], [pers[iii], ab, depths[iii]], 'Periodic')
         if len(params_df)>0:
 
             T0_, period_, depth_, tdur_, SNR = params_df.loc['t0', 'mean'], params_df.loc['Per', 'mean'], params_df.loc['depth', 'mean'], params_df.loc['dur', 'mean'], params_df.loc['SNR', 'mean']
             print('params df', params_df)
+            
+            print('checking convergence 1')
+            pd.DataFrame({'TICID':[con.TICID], 't0':[T0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0_, 5))+'_Yconv_per.csv')
 
+       
         else:
             T0_, period_, tdur_, depth_, SNR = np.nan, np.nan, np.nan, np.nan, 0
-
+            
+            print('checking convergence 2')
+            pd.DataFrame({'TICID':[con.TICID], 't0':[t0s[iii]], 'per':[pers[iii]], 'depth':[depths[iii]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0s[iii], 5))+'_Nconv_per.csv')
+        
+        
         if not np.isnan(T0_):
+            
             periods.append(period_)
             T0_vals.append(T0_)
             Tdur.append(tdur_)
@@ -2010,26 +2039,6 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
     flux      = np.array(total_time_flux_df['FLUX'].astype(float))
     flux_err  = np.array(total_time_flux_df['FLUX_ERR'].astype(float))
     intransit = np.full(len(time), False)
-#     print('t_samp', np.median(np.diff(time)), 'length time', len(time), 'time', time, 'time differences', np.diff(time), 'flux differences', np.diff(flux))
-#     print('checking time unique', len(np.unique(time)), 'checking flux unique', len(np.unique(flux)))
-
-#     time_init      = np.array(total_time_flux_df['TIME'].astype(float))
-#     flux_init      = np.array(total_time_flux_df['FLUX'].astype(float))
-#     flux_err_init  = np.array(total_time_flux_df['FLUX_ERR'].astype(float))
-#     intransit_init = np.full(len(time_init), False)
-    
-
-#     indexes_split_unorganize_start = breaking_up_data(time_init, 0.75)   
-#     diff_ary = np.array([max(np.array(time_init)[x])-min(np.array(time_init)[x]) for x in indexes_split_unorganize_start])
-    
-#     all_good_indxs =np.concatenate(list(itertools.compress(indexes_split_unorganize_start, diff_ary>0.25))).ravel()
-
-#     time      = time_init[all_good_indxs]
-#     flux      = flux_init[all_good_indxs]
-#     flux_err  = flux_err_init[all_good_indxs]
-#     intransit = np.full(len(time), False)
-#     intransit_init[~all_good_indxs] = True
-
 
     print('running search on all data')
 
@@ -2039,6 +2048,7 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
 
     else:
 
+        print('recursive BLS')
         periods_multis, T0_multis, Tdur_multis, depth_multis, intransit_per = using_BLS_recursive(time, flux, intransit = intransit, verbose = verbose, first=True)
         
 #     print('depths', depth_multis)
@@ -2073,12 +2083,14 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
 #     print('split indexes lengths: ', [len(x) for x in indexes_split])
     for iii in range(len(indexes_split)):
         if len(indexes_split) == 1:
+            print('too few indexes to run again')
             continue
 #         print('len time', len(new_time))
         intransit_split = np.array(intransit[indexes_split[iii]])
         split_time = np.array(time[indexes_split[iii]])
         split_flux = np.array(flux[indexes_split[iii]])
         split_flux_err = np.array(flux_err[indexes_split[iii]])
+        
         
         if len(split_time)==0:
             print('WHY ISNT THIS WORKING')
@@ -2098,7 +2110,7 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
         toss_bool = np.isin(np.round(periods_multis, 1), np.round(periods, 1))
 
 
-        print('periods to not f again', np.array(periods_multis)[toss_bool])
+        print('periods to not run again', np.array(periods_multis)[toss_bool])
         
         if len(np.array(periods_multis[~toss_bool]))>0:
         
@@ -2228,6 +2240,7 @@ def checking_multiples_and_duplicate_periodic_planets(per_ary, t0_ary, d_ary, q_
 
 
 def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = False, verbose = True, save_intrans = True, save_time = True, save_phaseFold = True):
+
     tm1 = tm.time()
     column_names = ['TICID', 'planet_name', 'period', 'T0', 'Tdur', 'depth', 'SNR']
     params = []
@@ -2259,7 +2272,9 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
         planet_name = str(nnn)
         
         print('index', jjj)
-        planet_df.loc[len(planet_df.index)] = [int(ticid), planet_name, periods_multi[jjj], T0_multi[jjj], Tdur_multi[jjj],1-depth_multi[jjj], SNR[jjj]]
+        
+
+        planet_df.loc[len(planet_df.index)] = [int(ticid), planet_name, periods_multi[jjj], T0_multi[jjj], Tdur_multi[jjj], min([1-depth_multi[jjj], depth_multi[jjj]]), SNR[jjj]]
     print('done ', ticid, planet_df)
 
     if save_time:
@@ -2488,35 +2503,36 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
     planet_name = 0
     params_df = []
     
-#     if len(init_periodic_singles)>0:
-#         indxs =np.unique([round(x[1], 3) for x in init_periodic_singles], return_index=True)[1]
-# #         print(indxs)
-#         periodic_singles = np.array(init_periodic_singles)[indxs]
-#         print('FOUND PERIODIC SINGLES', periodic_singles)
-#         for ppp in periodic_singles:
-#             T0_min, per, T0_all = ppp
-#             tdur_, depth_, T0_, period_ = run_mcmc_code_for_tdur_and_depth(np.array(total_time), total_flux, total_flux_err, T0_min, per, ab)
-#             planet_name +=1
-        
-#             planet_df.loc[len(planet_df.index)] = [int(ticid), planet_name, period_, T0_, tdur_,depth_]
-#     singles_indx = np.where(np.isin(t0_singles, init_periodic_singles, invert = Trfe))
-#     t0_singles = t0_singles[singles_indx]
-#     dur_singles = dur_singles[singles_indx]
-#     depth_singles = depth_singles[singles_indx]
     for sss in range(len(t0_singles)):
         print(sss)
         planet_name+=1
 
         if run_1:
-            planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_singles[sss], dur_singles[sss],1 -depth_singles[sss]]
+            planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_singles[sss], dur_singles[sss], depth_singles[sss]]
+       
+       
         else:
-#             print('data file 2', data_file)
-            new_params = pymc_new_general_function(np.array(total_time), total_flux, total_flux_err, t0_singles[sss], [dur_singles[sss], ab, 1.-depth_singles[sss]], 'Single')
-            params_df.append(new_params)
+        
+            new_params, conv, conv_attempt = pymc_new_general_function(np.array(total_time), total_flux, total_flux_err, t0_singles[sss], [dur_singles[sss], ab, depth_singles[sss]], 'Single')
             
-            t0_, period_, depth_, tdur_, q = new_params.loc['t0', 'mean'], new_params.loc['Per', 'mean'], new_params.loc['depth', 'mean'], new_params.loc['dur', 'mean'], new_params.loc['SNR', 'mean']
+            if len(new_params)>0:
+
+                params_df.append(new_params)
+            
+
+                t0_, period_, depth_, tdur_, q = new_params.loc['t0', 'mean'], new_params.loc['Per', 'mean'], new_params.loc['depth', 'mean'], new_params.loc['dur', 'mean'], new_params.loc['SNR', 'mean']
+           
+                print('checking convergence 3')
+
+                pd.DataFrame({'TICID':[con.TICID], 't0':[t0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_, 5))+'_Yconv_single.csv')
+
+            else:
+                print('checking convergence 4')
+
+                pd.DataFrame({'TICID':[con.TICID], 't0':[t0_singles[sss]], 'per':[np.nan], 'depth':[depth_singles[sss]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_singles[sss], 5))+'_Nconv_single.csv')
+
+            
             if not np.isnan(t0_):
-    
                 planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_, tdur_,depth_, q]
     if len(params_df)>0:
         params_df = pd.concat(params_df)
@@ -3454,28 +3470,115 @@ def extract_summary_dataframe(trace, hdi_prob=0.68):
     
 
 
-def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1):
+
+
+def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=8,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
     free_vars = model.free_RVs
     if not free_vars:
         raise ValueError("No free random variables found for sampling.")
     print('free vars', free_vars)
     # Use Metropolis for all free RVs
-    step = pm.Metropolis(vars=free_vars)
+#     step = pm.Metropolis(vars=free_vars)
+
+    step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
 
     for attempt in range(1, max_attempts + 1):
         print(f"Sampling attempt {attempt}...")
-        trace = pm.sample(step=step, draws=2000*attempt, tune=1000*attempt, chains=4, cores = 1)
+        trace = pm.sample(step=step, draws=30000*attempt, tune=12000*attempt, chains=chains, cores = cores, 
+            # use a safe, explicit multiprocessing context
+            mp_ctx=mp.get_context(mp_context),
+            # avoid identical RNG streams across chains
+            random_seed=list(range(chains)),
+)
 
         summary = az.summary(trace)
         if (summary['r_hat'] < rhat_threshold).all():
             print(f"Converged on attempt {attempt}")
-            return trace
+            return trace, attempt
 #         print('checking nans trace', trace.posterior['SNR'])
         print('checking nanas summary', az.summary(trace))
         print(f"Attempt {attempt} failed to converge. Retrying...")
 
     raise RuntimeError("Model did not converge after multiple attempts.")
+
+
+def _min_relative_ess(idata, total_draws):
+    """
+    Minimum relative ESS across all posterior variables.
+    ArviZ versions differ on `relative=` availability, so handle both.
+    """
+    try:
+        ess_rel = az.ess(idata, method="bulk", relative=True)
+        return float(ess_rel.to_array().min())
+    except TypeError:
+        ess_abs = az.ess(idata, method="bulk")
+        return float(ess_abs.to_array().min()) / float(total_draws)
+
+def sample_until_converged_smc(
+    model,
+    ess_ratio_target=0.70,     # target fraction of draws considered "effective"
+    max_attempts=5,            # retries with increasing population size
+    base_draws=2000,           # starting population per chain
+    chains=4,
+    cores=None,
+    mp_context="forkserver",   # safer in Jupyter/conda on Linux
+    random_seed=None,          # list[int] or int
+    var_names=None,            # names to summarize/monitor (optional)
+    progressbar=True,
+):
+    """
+    Run SMC repeatedly, increasing draws until min relative ESS meets target.
+    Returns (idata, info).
+    """
+    cores = cores or chains
+    seed = random_seed if random_seed is not None else list(range(chains))
+    best = None
+
+    with model:
+        for attempt in range(1, max_attempts + 1):
+            draws = int(base_draws * attempt)
+            print(f"[SMC attempt {attempt}] draws={draws}, chains={chains}")
+
+            idata = pm.sample_smc(
+                draws=draws,
+                chains=chains,
+                cores=cores,
+                random_seed=seed,
+                return_inferencedata=True,
+                progressbar=progressbar,
+            )
+
+            total_draws = draws * chains
+            min_ratio = _min_relative_ess(idata, total_draws)
+            print(f"  min relative ESS ≈ {min_ratio:.3f}")
+
+            if var_names:
+                try:
+                    print(az.summary(idata, var_names=var_names))
+                except Exception:
+                    pass
+
+            info = {
+                "attempt": attempt,
+                "draws_per_chain": draws,
+                "chains": chains,
+                "min_relative_ess": min_ratio,
+                "target_relative_ess": ess_ratio_target,
+            }
+            best = (idata, info)
+            
+            print(az.summary(idata, var_names=["Per", "rp_rs", "a_rs", "cosi", "t0"]))
+
+
+            if min_ratio >= ess_ratio_target:
+                print(f"Converged by ESS on attempt {attempt}")
+#                 return idata, info
+                return idata, attempt
+
+    print("Returning best attempt; target ESS not met")
+#     return best
+    return idata, attempt
 
 # def predict_lc_pymc(time_lc,t0,P,rp_rs,a,inc,e,omega,u1,u2,cad):
 #     oversample = 4
@@ -3668,8 +3771,7 @@ class BatmanOp(Op):
 
     def grad(self, inputs, g_outputs):
         # For now, return zeros (no gradient)
-        return [pt.zeros_like(i) for i in inputs]
-
+        return [pt.zeros(inp.shape, dtype=pt_config.floatX) for inp in inputs]
     
 def set_up_variables_for_pymc_fit(time, flux, unc, t0, other_pars, type_fn):
     mask = np.logical_or(np.logical_or(np.isnan(flux),  np.isnan(time)),  np.isnan(unc))
@@ -3731,7 +3833,7 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose 
         if type_fn == 'Single':
             print('single')
             per   = pm.TruncatedNormal("Per", mu=Per, sigma=10., lower= 0)
-            ecc   = pm.TruncatedNormal("Eccen", mu=0, sigma=0.25, lower = 0, upper = 1)
+            ecc   = pm.TruncatedNormal("Eccen", mu=0., sigma=0.25, lower = 0, upper = 1)
             sigma_a = 5.
             a_smaj = 215/10
 
@@ -3749,8 +3851,9 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose 
 
         rp_rs = pm.TruncatedNormal("rp_rs", mu=pt.sqrt(Depth), sigma=0.1, lower=0, upper=1)
         a_rs  = pm.TruncatedNormal("a_rs", mu=a_smaj, sigma=sigma_a, lower=1)
-        cosi  = pm.TruncatedNormal("cosi", mu=0., sigma=0.01, lower=0, upper=1/a_rs)
+        b     = pm.TruncatedNormal('b', mu=0, sigma=0.01, lower=0, upper = 1) #
 
+        cosi  = pm.Deterministic("cosi", b/a_rs)
         inc = pm.Deterministic('inclination', pt.arccos(cosi)*180./np.pi)
 
         if keep_ld_fixed:
@@ -3762,11 +3865,11 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose 
             u2 = pm.TruncatedNormal("u2", mu=U2, sigma=0.01, lower=0, upper=1)
           
             
-        cad = pt.switch(cad > 0, cad, 30.)
+        cad = pt.switch(cad > 0., cad, 30.)
 
             
         #Defining all non-used deterministic variables to be saved later
-        b      = pm.Deterministic('b', pt.abs(a_rs*cosi)) #
+#         b      = pm.Deterministic('b', pt.abs(a_rs*cosi)) #
         depth  = pm.Deterministic('depth', rp_rs**2) #
         T_dur0 = (per*24.)/(a_rs*np.pi)
         tau    = pm.Deterministic('tau', rp_rs*T_dur0/pt.sqrt(1.-(b**2.))) #
@@ -3859,12 +3962,14 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose 
 
     with model:
         try:
-
-            trace = sample_until_converged(model)
+            trace, conv_attempt = sample_until_converged_smc(model)
+#             trace, conv_attempt = sample_until_converged(model)
             summary = extract_summary_dataframe(trace)
 
         except RuntimeError as error:
-            return pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat'])
+#             return pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat'])
+
+            return pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat']), False, np.nan
             
 
     # Summary statistics
@@ -3882,7 +3987,8 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose 
 #         az.to_netcdf(trace, "trace_output.nc")
         plt.show()
     print('summary', summary)
-    return summary
+#     return summary
+    return summary, True, conv_attempt
 
 def flatten_summary_blocks(F):
     """

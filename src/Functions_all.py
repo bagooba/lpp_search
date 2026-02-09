@@ -609,16 +609,6 @@ def plot_lc_with_bboxes(lc_object, bboxes, ax=None, epoch = 0, **kwargs):
                 clip_on=True, 
                 fontsize = 12, zorder = 1E4
             )
-#             ax.text(
-#                 new_start - real_mask[3],
-#                 real_mask[2] + real_mask[4]*3 / 4 -0.03,
-#                 s='depth: '+f"{real_mask[4]:.4f}",
-#                 color='teal',
-#                 verticalalignment="top",
-#                 bbox=dict(alpha=0.75, color='None'),
-#                 clip_on=True, 
-#                 fontsize = 12, 
-#             )mo
 
         pc = PatchCollection(recs, lw=0.2, zorder=5, match_original = True)
         collection = ax.add_collection(pc)
@@ -722,7 +712,7 @@ def running_median(data, kernel=25):
 
     
     
-def breaking_up_data(time, break_val = 27.):
+def breaking_up_data(time, break_val = 27., min_size = 0.5):
     time = np.array(time)
     brk = np.append(np.append([0], find_breaks(time, break_val)), [len(time)])
 
@@ -731,11 +721,35 @@ def breaking_up_data(time, break_val = 27.):
         r = np.arange(brk[i],brk[i+1], 1)
 
         if len(r)>1:
-            num_pts_in_6hrs = np.nanmin(np.diff(time[r]))/24/4
+            
         
-            if len(time[r])>num_pts_in_6hrs:
+            if np.ptp(time[r])>min_size:
                 indexes.append(r)
     return indexes
+
+
+
+def find_common_element_indices(arrays):
+    if not arrays or len(arrays) < 2:
+        return [], {}
+
+    
+    all_elements = [element for arr in arrays for element in arr]
+    elements, indxs, cnts = np.unique(np.round(all_elements, 2), return_index = True, return_counts = True)
+    
+    common_elements = elements[np.where(cnts>1)]
+    print(common_elements)
+    
+    result = {}
+    for ele in common_elements:
+        result[ele] = []
+        for i, arr in enumerate(arrays):
+            if np.isin(ele, np.round(arr, 2)):
+                result[ele].append((i, list(np.round(arr,2)[0]).index(ele)))
+    return common_elements, result# Example usage:
+
+
+
 
 def check_multiples(arr):
     """
@@ -760,18 +774,134 @@ def check_multiples(arr):
 
 
 
-def order_of_magnitude(number):
-  """Calculates the order of magnitude of a number.
 
-  Args:
-    number: The number to calculate the order of magnitude of.
 
-  Returns:
-    The order of magnitude of the number.
-  """
-  if number == 0:
-    return 0
-  return math.floor(math.log10(abs(number)))
+def checking_BLS_periodicity(per, period_array, t0, t0_array):
+    factors = np.array(period_array)/per
+    print('factors',np.round(factors, 5))
+    factor_indxs = np.where(np.logical_or(np.abs(factors - np.rint(factors))<0.03, np.abs(1/factors - np.rint(1/np.array(factors)))<0.03))[0]
+
+    keep_factor = 1
+#     if 1. in np.round(factors, 7):
+#         keep_factor = -1E5
+#         print('its 1')
+
+#         return per, keep_factor
+    rep_indxs = np.where(np.rint(factors[factor_indxs])==1.)[0]     
+#     print('indexes of repeated periods', rep_indxs)
+    new_period = per
+    not1_indxs = np.where(np.rint(factors[factor_indxs])!=1.)
+
+    if len(rep_indxs)>0:
+        keep_factor = -1
+        val = 0
+        while (1. in np.round(period_array/new_period, 1) and val<len(period_array)+1):
+            val+=1                    
+            new_period = catching_periods_repeated_and_offset(new_period,t0, np.array(period_array), np.array(t0_array), rep_indxs)
+            if len(new_period)>0:
+                new_period  = min(new_period)
+                keep_factor = 1
+            elif new_period == per:
+                keep_factor = -1E5
+                
+
+        if val>len(period_array):
+            keep_factor = -2
+    
+
+    elif len(not1_indxs[0])>0:
+        
+        factors_not1 = factors[not1_indxs]
+        factors_not1[factors_not1>1] = 1.
+
+        factors_not1 = np.unique(factors_not1)
+        
+        keep_factor = max(1/factors_not1)
+        
+        #note: the following line is assuming that generally the min period is the true period, and multiples are aliases. This allows us to run MCMC on fewer periods. However, if the true period is the longer one, we're in trouble
+        new_period  = per
+    
+    print('final of periodicity check; period: ', new_period, ' keep factor', keep_factor)
+    return new_period, keep_factor
+        
+
+def checking_aliases_repeated_periodic_planets(per_ary, t0_ary, q_ary):
+    final_indexs = np.full(len(per_ary), True)
+    all_t0 = []
+    for iii in range(len(per_ary)):
+        all_t0.append([t0_ary[iii] + per_ary[iii]*np.arange(-50, 50)])
+    rep_t0, indxs_of_rep_t0 = find_common_element_indices(all_t0)
+    for t0 in rep_t0:
+        indx_t0 = set(np.array(indxs_of_rep_t0[np.round(t0, 2)])[:,0])
+#         print('indexes: ', indx_t0)
+        bad_ndx = np.where(np.array(q_ary) == min([q_ary[x] for x in indx_t0]))
+        final_indexs[bad_ndx] = False
+    print('final_indxs', final_indexs)
+    return final_indexs
+
+
+def checking_multiples_and_duplicate_periodic_planets(per_ary, t0_ary, d_ary, q_ary): 
+    final_indexs = np.full(len(per_ary), True)
+    div_period_ary = np.ones(len(per_ary))
+    
+    multiple_indxs = check_multiples(per_ary)
+    for ndxs in multiple_indxs:
+        i, j = ndxs
+        if np.abs(per_ary[i]/per_ary[j] - 1) < 0.03 and np.abs(d_ary[i]/d_ary[j] - 1) > 0.1:
+            print('likely a binary')
+            final_indexs[[i, j]] = False
+            
+        else:
+            
+            if np.abs(per_ary[i]/per_ary[j] - 1) >= 0.03:
+                bad_ndx = np.where(np.array(q_ary) == min((q_ary[i], q_ary[j])))
+#                 print('this should be int val', bad_ndx, 'and it should be one of these 2 vals', i, j)
+                final_indexs[bad_ndx] = False
+                
+            if  np.abs(per_ary[i]/per_ary[j] - 1) < 0.03:
+                t0_diff   = (t0_ary[i] - t0_ary[j])/per_ary[i]
+                new_indxs = check_multiples([t0_diff, per_ary[i]])
+                
+                if len(new_indxs) >0: 
+                    bad_ndx = np.where(np.array(q_ary) == min((q_ary[i], q_ary[j])))
+                    good_ndx = np.where(np.array(q_ary) == max((q_ary[i], q_ary[j])))
+
+                    final_indexs[bad_ndx] = False
+                    div_period_ary[good_ndx] = max([t0_diff/per_ary[i], per_ary[i]/t0_diff])
+    
+    rep_t0_final_indxs = checking_aliases_repeated_periodic_planets(per_ary, t0_ary, q_ary)
+                      
+    final_indexs = np.logical_and(rep_t0_final_indxs, final_indexs)
+    print('keeping these periods', np.array(per_ary)[final_indexs])
+    return final_indexs, div_period_ary
+
+
+
+
+def catching_periods_repeated_and_offset(per, t0, per_array, t0_array, rep_indxs):
+    
+    new_periods = []
+    
+    diff_tc = np.abs(np.array(t0_array)[rep_indxs] - t0)
+    
+    for iii in range(len(diff_tc)):
+        n = np.ceil(diff_tc[iii]/per)
+        min_diff_tc = np.nanmin(np.abs(diff_tc[iii] - np.array([n-1, n, n+1])*per))
+        
+        if round(min_diff_tc, 1) !=0:
+            frac_per = per/min_diff_tc
+            new_periods.append(min_diff_tc)
+        
+        else: 
+            new_periods.append(per)
+    
+    if len(new_periods)>0:
+        nper, indxs = np.unique(np.round(new_periods, 1), return_index=True)
+        new_periods = list(np.array(new_periods)[indxs])
+    
+    return new_periods
+                        
+
 
 
 def checking_last_BLS_power_for_artificial_inflation(power_results):
@@ -790,82 +920,6 @@ def checking_last_BLS_power_for_artificial_inflation(power_results):
     else:        
         return np.arange(len(power_results)-max_indx)
 
-
-def catching_periods_repeated_and_offset(per, t0, per_array, t0_array, rep_indxs):
-    
-    new_periods = []
-    
-    diff_tc = np.abs(np.array(t0_array)[rep_indxs] - t0)
-#     print('diff_tc', diff_tc)
-    for iii in range(len(diff_tc)):
-        n = np.ceil(diff_tc[iii]/per)
-#         print('what is n?', n, 'what is t0?', t0, t0_array)
-        min_diff_tc = np.nanmin(np.abs(diff_tc[iii] - np.array([n-1, n, n+1])*per))
-#         print('minimum difference between vals', min_diff_tc, 'period is', per)
-        if round(min_diff_tc, 1) !=0:
-            frac_per = per/min_diff_tc
-            new_periods.append(min_diff_tc)
-        else: 
-            new_periods.append(per)
-    if len(new_periods)>0:
-        nper, indxs = np.unique(np.round(new_periods, 1), return_index=True)
-        new_periods = list(np.array(new_periods)[indxs])
-#     if len(new_periods)>1:
-#     print('new periods ', new_periods)
-    return new_periods
-                        
-
-
-# def check_float_to_int_diff(val, threshold):
-#     if
-
-def checking_BLS_periodicity(per, period_array, t0, t0_array):
-    factors = np.array(period_array)/per
-    print('factors',np.round(factors, 5))
-    factor_indxs = np.where(np.logical_or(np.abs(factors - np.rint(factors))<0.03, np.abs(1/factors - np.rint(1/np.array(factors)))<0.03))[0]
-
-    keep_factor = 1
-    if 1. in np.round(factors, 7):
-        keep_factor = -1E5
-        print('its 1')
-
-        return per, keep_factor
-    rep_indxs = np.where(np.rint(factors[factor_indxs])==1.)[0]     
-#     print('indexes of repeated periods', rep_indxs)
-    new_period = per
-    keep_factor = 1
-#     print('keep factor 1', keep_factor)
-
-    if len(rep_indxs)>0:
-        keep_factor = -1
-        val = 0
-        while (1. in np.round(period_array/new_period, 1) and val<len(period_array)+1):
-            val+=1                    
-            new_period = catching_periods_repeated_and_offset(new_period,t0, np.array(period_array), np.array(t0_array), rep_indxs)
-            if len(new_period)>0:
-                new_period = new_period[0]
-            elif new_period == per:
-                keep_factor = -1E5
-                
-
-        if val>len(period_array):
-            keep_factor = -2
-
-    elif len(np.where(np.rint(factors[factor_indxs])!=1.)[0])>0:
-        
-        factors_not1 = factors[np.where(np.rint(factors[factor_indxs])!=1.)]
-        factors_not1[factors_not1>1] = 1.
-
-        factors_not1 = np.unique(factors_not1)
-        
-        keep_factor = max(1/factors_not1)
-        
-        #note: the following line is assuming that generally the min period is the true period, and multiples are aliases. This allows us to run MCMC on fewer periods. However, if the true period is the longer one, we're in trouble
-        new_period  = per
-    
-    print('final of periodicity check; period: ', new_period, ' keep factor', keep_factor)
-    return new_period, keep_factor
-        
 
         
 
@@ -928,233 +982,13 @@ def check_rules_to_continue_BLS(results, index):
     return rule_1
 
 
-
-def using_BLS_to_find_periodic_signals(time, flux, intransit, verbose = True, show_progress_info = True, save_phaseFold = True, periods = [], T0 = [], Tdur = [], depths = [], first=False):
+# def using_TLS_to_find_periodic_signals(time, flux, u, verbose = False, show_progress_info = True, save_phaseFold = True,
+#                                        intransit = [], periods = [], T0 = [], Tdur = [], 
+#                                        depths = [], first=True):
     
-    if first == True:
-        periods = []
-        T0 = []
-        Tdur = []
-        depths = []
-
-    time_new = time[~intransit]
-    flux_new = flux[~intransit]
-#     print('time length', len(time_new), 'time difference', max(time_new)-min(time_new))
-    df = 1E-4
-    
-#     print('frequency factor will be: ', np.max([1., 10**(freq_fact_exp-1)/2]))
-    
-    if len(time_new)>0:
-        durations = np.linspace(0.01, 0.5, 50)
-
-        freq_fact_prelim = df/min(durations)*(np.nanmax(time_new)-np.nanmin(time_new))**2
-        freq_fact_exp = np.ceil(np.log10(freq_fact_prelim))    
-
-        start = tm.time()
-
-        model     = BoxLeastSquares(time_new, flux_new)
-        max_per   = np.min([100., (max(time_new)-min(time_new))*4/5])
-        
-        max_dur   = np.min([0.5,  (max(time_new)-min(time_new))*2/5])
-        
-        results   = model.autopower(durations[durations<max_dur], frequency_factor = np.max([10, (10**(freq_fact_exp-1))/2]), maximum_period=max_per)#, objective='snr', )
-        
-        end = tm.time()    
-                
-        my_median = running_median(results.power, kernel = min((25, int(len(time_new)/10))))
-        results['power_final'] = results.power - my_median
-        
-        check_pwr_final_indxs = checking_last_BLS_power_for_artificial_inflation(results['power_final'])
-        index = np.argmax(results.power_final[check_pwr_final_indxs])
-
-        period = results.period[index]
-        t0 = results.transit_time[index]
-        duration = results.duration[index]
-        depth = results.depth[index]
-        
-        print('BLS period', period, ' transit duration', duration*24, ' hours; ', 'duration in days: ', duration)
-                
-        print('planet run: BLS time ', (end-start)/60, 'minutes')
-        
-        if verbose: # and np.ceil(results.duration[index]/np.nanmedian(np.diff(time)))>=3:
-            plt.figure(figsize = (10, 6))
-            val_triangles = min(results.power_final)-np.std(results.power_final)
-            ax = plt.gca()
-            ax.scatter(period, val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
-
-            plt.xlim(np.min(results.period), np.max(results.period))
-            for n in range(2, 10):
-                ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-                ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-            plt.ylabel(r'SDE')#, fontsize = 40)
-            plt.xlabel('Period (days)')#, fontsize = 40)
-        
-            ax.plot(results.period, results.power_final, color = 'k', lw=0.65)
-            
-            plt.show()
-            plt.close()
-            if duration<period:
-                plt.figure(figsize = (5, 5))
-                ax2 = plt.gca()
-
-                x = ((time_new - t0 + 0.5*period) % period) -( 0.5*period)
-                m = np.abs(x) < 0.5
-                ax2.scatter(
-                    x[m],
-                    flux_new[m],
-                    color='k',
-                    s=5,
-                    alpha=0.8,
-                    zorder=10)
-
-                x_new = np.linspace(-0.5, 0.5, 1000)
-
-                f = model.model(x_new + t0, period, duration, t0)
-
-                ax2.plot(x_new, f, color='grey', lw = 1, alpha = 0.6, zorder = 5)
-    #             ax2.set_xlim(-0.5, 0.5)
-                ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
-                ax2.set_ylabel('Relative Flux')#, color = 'k', fontsize = 40);
-                plt.show()
-                
-#             print('T0: ', results.transit_time[index], 'duration: ', results.duration[index], 'npoints_dur: ', np.ceil(results.duration[index]/np.nanmedian(np.diff(time))))
-
-        sorted_results = np.sort(results.power_final)
-#         stdv = np.nanstd(np.diff(results.power_final))
-
-        stdv = np.nanstd(sorted_results[:-5])
-        first_5_num_std = np.array([np.abs(np.diff(sorted_results[[-1, -1*x]]))[0]/stdv for x in range(2, 7)])
-
-        print('first 5 num stds', first_5_num_std)
-        
-        if period>50 and (not np.any(first_5_num_std>2.75)):
-            for key in results.keys():
-                if key!='objective' and key!='period':
-                    results[key] = results[key][results.period<50]
-            results.period = results.period[results.period<50]
-            index = np.argmax(results.power_final)
-
-            period = results.period[index]
-            print('new period < 50', period)
-            t0 = results.transit_time[index]
-            duration = results.duration[index]
-            depth = results.depth[index]
-
-
-            sorted_results = np.sort(results.power_final)
-#             stdv = np.nanstd(np.diff(results.power_final))
-            stdv = np.nanstd( sorted_results[:-5])
-
-            first_5_num_std = np.array([np.abs(np.diff(sorted_results[[-1, -1*x]]))[0]/stdv for x in range(2, 7)])
-
-            print('first 5 num stds - short periods', first_5_num_std)
-
-        rule_1 = check_rules_to_continue_BLS(results, index)
-                
-    if (not rule_1 and (not (np.any(first_5_num_std>5) and first_5_num_std[0]>0.7))) or len(time_new)==0 :
-        print(f'reason: not rule_1 {not rule_1}, no good std {not np.any(first_5_num_std>5)}, len time == 0 {len(time_new) == 0}') 
-
-#             print('checking rules', rule_1, len(time_new))
-        print('done with BLS')
-        print('per', periods, 'kept:', len(periods)>0)
-
-        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-
-    elif np.any(first_5_num_std>3.) and first_5_num_std[0]>0.7:
-        try:
-            stats = model.compute_stats(period, duration, t0)
-            print('current t0', t0)
-#             t0_new = stats["transit_times"][np.where(stats['per_transit_log_likelihood']==max(stats["per_transit_log_likelihood"]))[0]][-1]
-#             print('new t0: ', t0_new)s
-#             t0=t0_new
-            print('number transit times in baseline:', len(stats["transit_times"][stats["per_transit_count"]>0]), ' \nnumber of point in each transit: ', stats["per_transit_count"][stats["per_transit_count"]>0], '\ntransit likelihood:', stats["per_transit_log_likelihood"][stats["per_transit_count"]>0])
-            
-            transit_times_all = stats["transit_times"][np.where(stats["per_transit_count"]>0)[0]]
-#             for zzz in range(len(transit_times_all)):
-#                 t0_x =transit_times_all[zzz]
-#                 fig,ax  = plt.subplots(figsize=(5,5))
-                
-# #                 print(time_new)
-#                 good_locations = np.where(np.logical_and(t0_x-duration-1/4<time_new, t0_x+duration+1/4>time_new))
-                
-# #                 print('good locations', good_locations)
-#                 ax.scatter(time_new[good_locations], flux_new[good_locations], color = 'C'+str(zzz))
-#                 miny, maxy = ax.get_ylim()
-#                 ax.vlines(t0_x, miny, maxy,)
-#                 ax.set_ylim(miny, maxy)
-#                 plt.show()
-            array_targets = np.array(stats["per_transit_count"])
-
-#             bad_transits = stats["transit_times"][np.where(stats["per_transit_log_likelihood"]<-5E-5)[0]]
-#             if len(bad_transits)>0 and len(stats["transit_times"][stats["per_transit_count"]>0])<10:
-#                 for t0 in bad_transits:
-#                     print('bad transit', t0)
-#                     intransit = np.logical_or(intransit, transit_mask(time,  period*7, duration+1/3, t0))
-#                 return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0,  Tdur = Tdur, depths = depths, first = False)
-                 
-
-            if len(np.where(array_targets>0)[0])<2:
-                print('BLS marked this as a single transit - I dont know why, but Im dropping it')
-
-
-                intransit = np.logical_or(intransit, transit_mask(time,  period, (duration)+1/6, t0))
-
-            
-                return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0,  Tdur = Tdur, depths = depths, first = False)
-            else:
-                print('checking for odd/even binaries')
-                t0, depth, period = checking_BLS_odd_even_binaries(stats, t0, period, depth)
-
-
-        except ValueError as err:
-            print('getting error: ', err)
-
-
-        if len(periods)>0:# and len(factor_indxs)>0:
-
-            new_period, keep_factor = checking_BLS_periodicity(period, periods, t0, T0)
-
-            if keep_factor>0:
-
-                intransit = np.logical_or(intransit, transit_mask(time, new_period, duration+1/6, t0))
-            elif keep_factor < -50 :
-                intransit = np.logical_or(intransit, transit_mask(time, new_period/2, duration+1/6, t0))
-            else:
-                intransit = np.logical_or(intransit, transit_mask(time, new_period, duration+1/3, t0))
-
-            if new_period>0.5 and keep_factor>0:
-
-                print('kept period 1')
-                depths.append(results.depth[index])
-                periods.append(new_period)
-                # T0.append(last_t0)
-                T0.append(t0)
-                Tdur.append(duration)
-        else:
-            print('kept this period', period)
-
-#                 intransit = np.logical_or(intransit, transit_mask(time, results.period[index], (2*results.duration[index]/24)+(1/6), results.transit_time[index]))
-            intransit = np.logical_or(intransit, transit_mask(time, period, duration+(1/6), t0))
-
-            depths.append(min([1-depth, depth]))
-            periods.append(period)
-            T0.append(t0)
-            Tdur.append(duration)
-        return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0,  Tdur = Tdur, depths = depths, first = False)
-
-
-
-    else: 
-        print('got signal, but probably not periodic; blocking intransit and searching again')
-        intransit = np.logical_or(intransit, transit_mask(time, results.period[index], duration+(1/6), results.transit_time[index]))
-
-
-        return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0,  Tdur = Tdur, depths = depths, first = False)
-
-
-
-# def using_BLS_to_find_periodic_signals(time, flux, verbose = True, show_progress_info = True, save_phaseFold = True, intransit = [], periods = [], T0 = [], Tdur = [], depths = [], first=True):
-    
+#     time_diff = max(time)-min(time)
+#     print('time diff', time_diff)
+#     max_per = min(time_diff, 100.)
 #     if first == True:
 #         intransit = np.full(len(time), False)
 #         periods = []
@@ -1162,380 +996,125 @@ def using_BLS_to_find_periodic_signals(time, flux, intransit, verbose = True, sh
 #         Tdur = []
 #         depths = []
 
-#     time_new = time[~intransit]
-#     flux_new = flux[~intransit]
-    
-#     if len(time)>500:
-#         mag_factor = 1
-#     else:
-#         mag_factor = 10**order_of_magnitude(len(time))
+#     time_new = np.array(time)[~intransit]
+#     flux_new = np.array(flux)[~intransit]
 #     if len(time_new)>0:
 #         start = tm.time()
 
-#         durations = np.linspace(0.01, 0.5, 50)
-#         model     = BoxLeastSquares(time_new, flux_new)
-#         max_per = np.min([100., (max(time_new)-min(time_new))*2/3])
+#         durations = np.linspace(0.02, 0.5, 75)
         
-#         results   = model.autopower(durations, frequency_factor = 100/mag_factor, maximum_period=max_per)#, objective='snr', )
-        
-#         if np.all(np.abs(results.power) == np.inf): 
-#             results.power = np.random.normal(0, 1e-5, len(results.power))
-#         print('time len: ', len(time))
-#         my_median = running_median(results.power, kernel = min((25, int(len(time_new)/10))))
-#         results['power_final'] = results.power - my_median
-# #         print('checking median', my_median, set(my_median))
-# #         print('checking results.power', results.power)
-        
-        
-        
-#         index = np.argmax(results.power_final)
-#         period = results.period[index]
-                   
-#         end = tm.time()
+#         model = transitleastsquares(time_new, flux_new)
+#         results = model.power(
+#             period_min=0,
+#             period_max=max_per,
+# #             transit_depth_min=ppm*10**-6,
+# #             oversampling_factor=10,
+# #             duration_grid_step=1.02,
+#             u=ab,
+#             limb_dark='quadratic',
+# #             M_star = 1,
+# #             M_star_max=1.1
+#             n_transits_min = 1,
+#             show_progress_info = show_progress_info
+#             )
 
-
-#         t0 = results.transit_time[index]
-#         duration = results.duration[index]
-#         depth = results.depth[index]
-        
-#         print('BLS period', period, ' transit duration', duration*24, ' hours')
                 
-#         print('planet run: BLS time ', (end-start)/60, 'minutes, num of points intransit', len(np.where(intransit)[0]))
+#         index = np.argmax(results.power)
+        
+#         period    = results.period
+#         val_triangles = min(results.power)-np.std(results.power)
 
-#         if verbose: # and np.ceil(results.duration[index]/np.nanmedian(np.diff(time)))>=3:
-#             plt.figure(figsize = (10, 6))
-#             val_triangles = min(results.power_final)-np.std(results.power_final)
+# #         print('period', period, 'index ', index)
+#         end = tm.time()
+#         if round(results.T0, 4) in [round(x, 4) for x in T0]:
+        
+#             intransit = np.logical_or(intransit, transit_mask(time, results.period, results.duration, results.T0))
+#             print('FOUND THE SAME PLANET: CONTINUING')
+#             return using_TLS_to_find_periodic_signals(time, flux, u, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
+#         if verbose:
+            
+
+# #             print('plot 1')
+#             plt.figure(figsize = (10,6))
+
 #             ax = plt.gca()
-#             ax.scatter(period, val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
+#             ax.set_facecolor('None')
+#             ax.scatter(time_new,flux_new, color = 'k', zorder = 10, marker = '.')
+            
+#             faux_intransit = np.logical_or(intransit, transit_mask(time, results.period, results.duration, results.T0))
+            
+#             ax.scatter(np.array(time)[~faux_intransit],np.array(flux)[~faux_intransit], 
+#                        color = 'r', zorder = 11, marker = '.', alpha = 0.3)
 
-#             plt.xlim(np.min(results.period), np.max(results.period))
+#             plt.ylabel(r'N. Flux')#, fontsize = 40)
+#             plt.xlabel('Time', fontsize = 40)
+
+#             plt.figure(figsize = (5, 5))
+
+#             ax = plt.gca()
+#             ax.set_facecolor('None')
+#             ax.scatter(period,val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
+
+#             plt.xlim(np.min(results.periods), np.max(results.periods))
 #             for n in range(2, 10):
 #                 ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
 #                 ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
+
+
 #             plt.ylabel(r'SDE')#, fontsize = 40)
 #             plt.xlabel('Period (days)')#, fontsize = 40)
         
-#             ax.plot(results.period, results.power_final, color = 'k', lw=0.65)
+        
+#             ax.plot(results.periods, results.power, color = 'k', lw=1)
+#             ax.xaxis.label.set_color('k')        #setting up X-axis label color to yellow
+#             ax.yaxis.label.set_color('k')          #setting up Y-axis label color to blue
+
+
+#             t0 = results.T0
+#             duration = results.duration
             
 #             plt.show()
 #             plt.close()
-#             if duration<period:
-#                 plt.figure(figsize = (5, 5))
-#                 ax2 = plt.gca()
-
-#                 x = ((time - t0 + 0.5*period) % period) -( 0.5*period)
-#                 m = np.abs(x) < 0.5
-#                 ax2.scatter(
-#                     x[m],
-#                     flux[m],
-#                     color='k',
-#                     s=5,
-#                     alpha=0.8,
-#                     zorder=10)
-
-#                 x_new = np.linspace(-0.5, 0.5, 1000)
-
-#                 f = model.model(x_new + t0, period, duration, t0)
-
-#                 ax2.plot(x_new, f, color='grey', lw = 1, alpha = 0.6, zorder = 5)
-#     #             ax2.set_xlim(-0.5, 0.5)
-#                 ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
-#                 ax2.set_ylabel('Relative Flux')#, color = 'k', fontsize = 40);
-#                 plt.show()
-# #             print('T0: ', results.transit_time[index], 'duration: ', results.duration[index], 'npoints_dur: ', np.ceil(results.duration[index]/np.nanmedian(np.diff(time))))
-
-
-#         sorted_results = np.sort(np.unique(results.power_final))
-#         stdv = np.nanstd(np.diff(results.power_final))
-        
-        
-#         first_5_num_std = np.array([np.abs(np.diff(sorted_results[[-1, -1*x]]))[0]/stdv for x in range(2, 7)])
-
-#         print('first 5 num stds', first_5_num_std)
-#         if np.any(first_5_num_std>3):
-#             try:
-#                 stats = model.compute_stats(period, duration, t0)
-#                 if stats['depth'][1] > 10*stats['depth'][0]:
-
-#                     if stats['depth_odd'][0]/stats['depth_even'][0] > 10:
-#                         print('keeping odd - would rather keep binary as 2 objects than miss a planet from period alias')
-#                         t0 = t0+period
-#                         period = 2*period
-#                         depth = stats['depth_odd'][0]
-
-#                     elif stats['depth_even'][0]/stats['depth_odd'][0] > 10:
-#                         print('keeping even - would rather keep binary as 2 objects than miss a planet from period alias')
-#                         t0 = t0
-#                         period = 2*period
-#                         depth = stats['depth'][0]
-
-# #                     if period != period_:
-# #                         print(f'we got here, and these are the old params: per={period}, t0={t0} and depth={depth}; and the new ones: per={period_}, t0={t0_} and depth={depth_}. The duration is {results.duration[index]}')
-
-# #                         intransit = np.logical_or(intransit, transit_mask(time, period_, (2*results.duration[index]/24)+(1/4), t0_))
-
-# #                         depths.append(1-depth_)
-# #                         periods.append(period_)
-# #                         # T0.append(last_t0)
-# #                         T0.append(t0_)
-# #                         Tdur.append(results.duration[index])
-# #                         return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
-
-#             except ValueError as err:
-#                 print('getting error: ', err)
-
-        
-        
-
-#             if len(periods)>0:# and len(factor_indxs)>0:
             
-# #             periods = np.array(periods)
-#                 factors = np.array(periods)/period
-#                 factor_indxs = np.where(np.logical_or(np.abs(factors - np.rint(factors))<0.03, np.abs(1/factors - np.rint(1/np.array(factors)))<0.03))[0]
+#             plt.figure(figsize = (5, 5))
+#             ax2 = plt.gca()
 
-#                 rep_indxs = np.where(np.rint(factors[factor_indxs])==1.)[0]     
-#                 if len(rep_indxs)>0:
-#                     new_period = period
-#                     val = 0
-#                     while (1. in np.round(periods/new_period, 1) and val<len(periods)+1):
-#                         val+=1                    
-#                         new_period = catching_periods_repeated_and_offset(new_period,t0, np.array(periods), np.array(T0))
-#                         if len(new_period)>0:
-#                             new_period = new_period[0]
+#             ax2.set_facecolor('None')
 
-#                     print('new period', new_period, type(new_period))
-#                     if val>len(periods) and type(new_period) == np.float64:
-#                         print(' we went 1')
-#                         intransit = np.logical_or(intransit, transit_mask(time, new_period, (2*results.duration[index]/24)+(1/3), results.transit_time[index]))
+#             x = ((time - t0 + 0.5*period) % period) -( 0.5*period)
+#             m = np.abs(x) < 0.5
+#             ax2.scatter(
+#                 x[m],
+#                 np.array(flux)[m],
+#                 color='gray',
+#                 s=5,
+#                 alpha=0.8,
+#                 zorder=2)
 
-#                     elif val<=len(periods) and type(new_period) == np.float64:
-#                         print(' we went 2')
+#             x_new = np.linspace(-0.5, 0.5, 1000)
+#             f = model.model(x_new + t0, period, duration, t0)
 
-#                         intransit = np.logical_or(intransit, transit_mask(time, new_period, (2*results.duration[index]/24)+(1/6), results.transit_time[index]))
-#                         if new_period>0.5:
-#     #                         print(f'while the new period is {np.array(periods)[rep_indxs]}, there appears to be an offset in these transits - lets keep the difference = {min_diff_tc}  which is {frac_per} of the prevous period {period} and know this could be a binary. ')
-
-#                             depths.append(1-results.depth[index])
-#                             periods.append(new_period)
-#                             # T0.append(last_t0)
-#                             T0.append(results.transit_time[index])
-#                             Tdur.append(results.duration[index])
-
-#                 elif len(np.where(np.rint(factors[factor_indxs])!=1.)[0])>0:
-#                     keep_factor = np.rint(factors[factor_indxs])
-#                     keep_factor = keep_factor[keep_factor != 1.]
-
-#                     keep_factor[keep_factor<1] = 1/keep_factor[keep_factor<1]
-#                     keep_factor = np.unique(keep_factor)
-#                     print('here are the fractions of the true period, ', keep_factor)
-
-#                     new_period = period
-
-#                     intransit = np.logical_or(intransit, transit_mask(time, new_period, (2*results.duration[index]/24)+(1/4), results.transit_time[index]))
-
-#                     if new_period>0.5:
-#                         print('this is as repeat, but we probably found the wrong alias first! going to keep period: ', new_period, ' == period/', keep_factor, 'as well as old period')
-
-#                         depths.append(1-results.depth[index])
-#                         periods.append(new_period)
-#                         # T0.append(last_t0)
-#                         T0.append(results.transit_time[index])
-#                         Tdur.append(results.duration[index])
-
-#                 return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
-
-
-#         rule_1 = np.abs(np.diff(sorted_results[[-1, -2]])) > 2.*stdv
-# #         print('rule 1', rule_1)
- 
-#         pwr_copy = np.array(results.power_final).copy()
-#         pwr_copy[index] = -np.inf
-
-#         # Get the index of the maximum value in the modified array
-
-#         period_2 = results.period[np.argmax(pwr_copy)]
-
-#         if (not rule_1) and np.isin(np.round(max([period, period_2])/min([period, period_2]),1), [2.0, 0.5]):
-#             print('double checking rule 1')
-                        
-#             rule_1 = np.abs(np.diff(sorted_results[[-1, -3]])) > 2.*stdv
-#             pwr_copy = np.array(results.power_final).copy()
-#             pwr_copy[np.argmax(pwr_copy)] = -np.inf
-
-#         # Get the index of the maximum value in the modified array
-
-#             period_3 = results.period[np.argmax(pwr_copy)]
-
-#             if (not rule_1) and (round(max([period, period_3])/min([period, period_3]),1) in [2.0, 0.5]):
-#                 print('double checking rule 2')
-#                 stdv1 = np.nanstd(np.sort(np.diff(results.power_final))[:-3])
-                
-#                 print('standard deviations', stdv, stdv1)
-#                 print('number stdev',np.abs(np.diff(sorted_results[[-1, -4]]))[0]/stdv1)
-                
-                
-#                 rule_1 = np.abs(np.diff(sorted_results[[-1, -4]])) > 2.25*stdv1
-                
-                
-#         if not rule_1 or len(time_new)==0 :
-
-#             print('checking rules', rule_1, len(time_new))
-#             print('done with BLS')
-#             print('per', periods, 'kept:', len(periods)>0)
-
+#             ax2.plot(x_new, f, color='grey', lw = 1, alpha = 0.6, zorder = 5)
+#             ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
+#             ax2.set_ylabel('Relative Flux')#, color = '#CC9966', fontsize = 40);
+#             plt.show()
+# #             print('T0: ', results.T0, 'duration: ', results.duration, 'npoints_dur: ', np.ceil(results.duration/30.))
+            
+            
+#         if not np.abs(np.diff(np.array(sorted(results.power))[[-1, -4]]))>2*np.nanstd(results.power) or len(time_new)==0 :
+#             print('FOUND NO PLANET: FINISHING THIS LC')
 #             return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
+        
+        
 #         else: 
-#             print('got here')
-#             intransit = np.logical_or(intransit, transit_mask(time, results.period[index], (2*results.duration[index]/24)+(1/6), results.transit_time[index]))
+#             intransit = np.logical_or(intransit, transit_mask(time, results.period, (2*results.duration/24)+(1/6), results.T0[0]))
             
-            
-#             depths.append(1-depth)
-#             periods.append(period)
-#             T0.append(t0)
-#             Tdur.append(duration)
-#             return using_BLS_to_find_periodic_signals(time, flux, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0,  Tdur = Tdur, depths = depths, first = False)
-#     else:
-#         print('done with BLS')
-#         print('per', periods, 'kept:', len(periods)>0)
-
-#         return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-
-
-
-
-def using_TLS_to_find_periodic_signals(time, flux, u, verbose = False, show_progress_info = True, save_phaseFold = True,
-                                       intransit = [], periods = [], T0 = [], Tdur = [], 
-                                       depths = [], first=True):
-    
-    time_diff = max(time)-min(time)
-    print('time diff', time_diff)
-    max_per = min(time_diff, 100.)
-    if first == True:
-        intransit = np.full(len(time), False)
-        periods = []
-        T0 = []
-        Tdur = []
-        depths = []
-
-    time_new = np.array(time)[~intransit]
-    flux_new = np.array(flux)[~intransit]
-    if len(time_new)>0:
-        start = tm.time()
-
-        durations = np.linspace(0.02, 0.5, 75)
-        
-        model = transitleastsquares(time_new, flux_new)
-        results = model.power(
-            period_min=0,
-            period_max=max_per,
-#             transit_depth_min=ppm*10**-6,
-#             oversampling_factor=10,
-#             duration_grid_step=1.02,
-            u=ab,
-            limb_dark='quadratic',
-#             M_star = 1,
-#             M_star_max=1.1
-            n_transits_min = 1,
-            show_progress_info = show_progress_info
-            )
-
-                
-        index = np.argmax(results.power)
-        
-        period    = results.period
-        val_triangles = min(results.power)-np.std(results.power)
-
-#         print('period', period, 'index ', index)
-        end = tm.time()
-        if round(results.T0, 4) in [round(x, 4) for x in T0]:
-        
-            intransit = np.logical_or(intransit, transit_mask(time, results.period, (2*results.duration/24)+(1/6), results.T0))
-            print('FOUND THE SAME PLANET: CONTINUING')
-            return using_TLS_to_find_periodic_signals(time, flux, u, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
-        if verbose:
-            
-
-#             print('plot 1')
-            plt.figure(figsize = (10,6))
-
-            ax = plt.gca()
-            ax.set_facecolor('None')
-            ax.scatter(time_new,flux_new, color = 'k', zorder = 10, marker = '.')
-            
-            faux_intransit = np.logical_or(intransit, transit_mask(time, results.period, (2*results.duration/24)+(1/6), results.T0))
-            
-            ax.scatter(np.array(time)[~faux_intransit],np.array(flux)[~faux_intransit], 
-                       color = 'r', zorder = 11, marker = '.', alpha = 0.3)
-
-            plt.ylabel(r'N. Flux')#, fontsize = 40)
-            plt.xlabel('Time', fontsize = 40)
-
-            plt.figure(figsize = (5, 5))
-
-            ax = plt.gca()
-            ax.set_facecolor('None')
-            ax.scatter(period,val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
-
-            plt.xlim(np.min(results.periods), np.max(results.periods))
-            for n in range(2, 10):
-                ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-                ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-
-
-            plt.ylabel(r'SDE')#, fontsize = 40)
-            plt.xlabel('Period (days)')#, fontsize = 40)
-        
-        
-            ax.plot(results.periods, results.power, color = 'k', lw=1)
-            ax.xaxis.label.set_color('k')        #setting up X-axis label color to yellow
-            ax.yaxis.label.set_color('k')          #setting up Y-axis label color to blue
-
-
-            t0 = results.T0
-            duration = results.duration
-            
-            plt.show()
-            plt.close()
-            
-            plt.figure(figsize = (5, 5))
-            ax2 = plt.gca()
-
-            ax2.set_facecolor('None')
-
-            x = ((time - t0 + 0.5*period) % period) -( 0.5*period)
-            m = np.abs(x) < 0.5
-            ax2.scatter(
-                x[m],
-                np.array(flux)[m],
-                color='gray',
-                s=5,
-                alpha=0.8,
-                zorder=2)
-
-            x_new = np.linspace(-0.5, 0.5, 1000)
-            f = model.model(x_new + t0, period, duration, t0)
-
-            ax2.plot(x_new, f, color='grey', lw = 1, alpha = 0.6, zorder = 5)
-            ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
-            ax2.set_ylabel('Relative Flux')#, color = '#CC9966', fontsize = 40);
-            plt.show()
-#             print('T0: ', results.T0, 'duration: ', results.duration, 'npoints_dur: ', np.ceil(results.duration/30.))
-            
-            
-        if not np.abs(np.diff(np.array(sorted(results.power))[[-1, -4]]))>2*np.nanstd(results.power) or len(time_new)==0 :
-            print('FOUND NO PLANET: FINISHING THIS LC')
-            return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-        
-        
-        else: 
-            intransit = np.logical_or(intransit, transit_mask(time, results.period, (2*results.duration/24)+(1/6), results.T0[0]))
-            
-            depths.append(results.depth)
-            periods.append(results.period)
-            T0.append(results.T0)
-            Tdur.append(results.duration)
-            print('FOUND A PLANET: CONTINUING')
-            return using_TLS_to_find_periodic_signals(time, flux, u, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
+#             depths.append(results.depth)
+#             periods.append(results.period)
+#             T0.append(results.T0)
+#             Tdur.append(results.duration)
+#             print('FOUND A PLANET: CONTINUING')
+#             return using_TLS_to_find_periodic_signals(time, flux, u, intransit=intransit, verbose = verbose,  periods = periods, T0 = T0, Tdur = Tdur, depths = depths, first = False)
 
 
 # ------------------------
@@ -1592,165 +1171,6 @@ def build_box_model(time, t0, duration, depth, period = -1):
 # ------------------------
 # Main Recursive Function
 # ------------------------
-
-def using_GERBLS_recursive(time, flux, flux_err = None, intransit=None,
-                            verbose=True, plot=True, max_planets=5,
-                            min_SDE=4, min_delta_BIC=50, use_AIC=False,
-                            periods=None, T0=None, Tdur=None, depths=None, first=False):
-    """
-    Recursive multi-planet search using GERBLS pyFastBLS + run_double and BIC/AIC-based model selection.
-    """
-    start = tm.time()
-    print('start')
-    if intransit is None:
-        intransit = np.zeros_like(time, dtype=bool)
-    if flux_err is None:
-        flux_err = np.std(flux) * np.ones_like(flux)
-
-    if first:
-        periods, T0, Tdur, depths = [], [], [], []
-
-    # Mask in-transit points
-    time_new, flux_new, flux_err_new = time[~intransit], flux[~intransit], flux_err[~intransit]
-    if len(time_new) < 10:
-        print("Stopping: insufficient data.")
-        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-
-    # Prepare data for GERBLS
-    data = gerbls.pyDataContainer()
-    data.store(time_new, flux_new, flux_err_new)
-    min_period =  0.5
-    max_period = np.min([50., (max(time_new)-min(time_new))*2/3])
-    t_samp = np.median(np.diff(time_new))
-    print('t_samp', t_samp)#, 'length time', len(time_new), 'time', time_new, 'time differences', np.diff(time_new), 'flux differences', np.diff(flux_new))
-    
-    if t_samp == 0:
-        print('Im unhappy')
-    t_samp = max([t_samp, 10/60/24])
-    
-    durations = np.linspace(0.01, 0.5, 50)
-
-    # Initialize and setup BLS object
-    bls = gerbls.pyFastBLS()
-    bls.setup(data, min_period, max_period,
-              t_samp=t_samp,
-#               duration_mode='constant',
-              durations=durations)  # durations in days
-
-    # Run BLS with double precision
-    bls.run_double(verbose = True)
-    blsa = gerbls.pyBLSAnalyzer(bls)
-    # Extract best candidate
-    
-    end = tm.time()
-    print('end. took: ', abs(start-end)/60, 'minutes')
-    
-    my_median = running_median(blsa.dchi2, kernel = min((25, int(len(time_new)/15))))
-
-    idx      = np.argmax(blsa.dchi2-my_median)
-    
-    period   = blsa.P[idx]
-    t0       = blsa.t0[idx]
-    duration = blsa.dur[idx]
-    depth    = blsa.dmag[idx]
-
-    # Compute SDE
-    sde = (blsa.dchi2[idx] - np.median(blsa.dchi2)) / np.std(blsa.dchi2)
-    model = blsa.generate_models(1)[0]    
-    if verbose:
-        print(f"Candidate: P={period:.4f} d, SDE={sde:.2f}")
-
-    
-    if sde < min_SDE:
-        print("Stopping: SDE below threshold.")
-        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-
-    if plot: # and np.ceil(results.duration[index]/np.nanmedian(np.diff(time)))>=3:
-        plt.figure(figsize = (10, 6))
-        val_triangles = min(blsa.dchi2)-np.std(blsa.dchi2)
-        ax = plt.gca()
-        ax.scatter(period, val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
-        ax.set_xlim(blsa.P.min(), blsa.P.max())
-        for n in range(2, 10):
-            ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-            ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-        plt.ylabel(r'SDE')#, fontsize = 40)
-        plt.xlabel('Period (days)')#, fontsize = 40)
-
-        ax.plot(blsa.P, blsa.dchi2-my_median, color = 'k', lw=0.65)
-
-        plt.show()
-        plt.close()
-        if duration<period:
-            plt.figure(figsize = (5, 5))
-            ax2 = plt.gca()
-
-            x = ((time_new - t0 + 0.5*period) % period) -( 0.5*period)
-            m = np.abs(x) < 0.5
-            ax2.scatter(
-                x[m],
-                flux_new[m],
-                color='k',
-                s=5,
-                alpha=0.8,
-                zorder=10)
-
-            x_new = np.linspace(-0.5, 0.5, 1000)
-
-            f = build_box_model(x_new, 0, duration, depth, period)
-
-            ax2.plot(x_new, f, color='grey', lw = 1, alpha = 0.6, zorder = 5)
-#             ax2.set_xlim(-0.5, 0.5)
-            ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
-            ax2.set_ylabel('Relative Flux')#, color = 'k', fontsize = 40);
-            plt.show()
-
-    # Build models for likelihood
-    model_flux = build_box_model(time_new, t0, duration, depth, period)
-    null_flux = np.ones_like(flux_new)
-
-    logL_transit = compute_log_likelihood(flux_new, model_flux, flux_err_new)
-    logL_null = compute_log_likelihood(flux_new, null_flux, flux_err_new)
-
-    n, k = len(time_new), 4
-    bic_transit = compute_BIC(logL_transit, n, k)
-    bic_null = compute_BIC(logL_null, n, 1)
-    delta_BIC = bic_null - bic_transit
-
-    if verbose:
-        print(f"ΔBIC={delta_BIC:.2f} (threshold={min_delta_BIC})")
-
-    if use_AIC:
-        aic_transit = compute_AIC(logL_transit, k)
-        print(f"AIC={aic_transit:.2f}")
-
-    if delta_BIC < min_delta_BIC:
-        print("Candidate rejected: insufficient BIC improvement - will still mask and try again.")
-        # Mask transits using your transit_mask
-        intransit = np.logical_or(transit_mask(time, period, duration, t0))
-
-        return using_GERBLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
-
-    # Accept candidate
-    periods.append(period)
-    T0.append(t0)
-    Tdur.append(duration)
-    depths.append(depth)
-    print('depths', depths)
-
-    if verbose:
-        print(f"Accepted planet: P={period:.4f} d")
-
-    # Mask transits using your transit_mask
-    intransit  = np.logical_or(intransit, transit_mask(time, period, duration, t0))
-
-    if len(periods) >= max_planets:
-        print("Reached max planets.")
-        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
-
-    # Recurse
-    return using_GERBLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
-        
 
 def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
                             verbose=True, plot=True, max_planets=10,
@@ -1890,15 +1310,12 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
 
         if keep_factor < -50 :
 
-            intransit = np.logical_or(intransit,  transit_mask(time, new_period/2, duration, t0))
+            intransit = np.logical_or(intransit,  transit_mask(time, new_period/2, duration, t0, buffer = 0.3))
         else:
-            intransit = np.logical_or(intransit, transit_mask(time, new_period, duration, t0))
+            intransit = np.logical_or(intransit, transit_mask(time, new_period, duration, t0, buffer = 0.3))
 
         if keep_factor<0:
             repeat = True
-
-          
-
 
     # Build models for likelihood
     model_flux = model.model(time_new, period, duration, t0)
@@ -1915,26 +1332,9 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     bic_null = compute_BIC(logL_null, n, 1)
     delta_BIC = bic_null - bic_transit
 
-#     delta_BIC_box = (bic_wide_box + bic_long_box)/2 - bic_transit
-    
-    if verbose:
-        print(f"ΔBIC={delta_BIC:.2f}, (threshold={min_delta_BIC})")
 
-#     if use_AIC:
-#         aic_transit = compute_AIC(logL_transit, k)
-#         print(f"AIC={aic_transit:.2f}")
-        
-        
-            
-            
-#     if (delta_BIC < min_delta_BIC) or (single) or (repeat):
     if (single) or (repeat):
         print('masking this single transit or repeat detection and continuing')
-#         if delta_BIC < min_delta_BIC and not first:
-#             print("Candidate rejected: insufficient BIC improvement.")
-#             intransit = np.logical_or(intransit, transit_mask(time, period, duration, t0))
-
-#             return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
 
 #             return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
 #         else:
@@ -1954,7 +1354,7 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     T0.append(t0)
     Tdur.append(duration)
     depths.append(depth)
-    print('depths all', depths)
+    print('depths all', depths, 'transt durations: ', Tdur)
 
     if verbose:
         print(f"Accepted planet: P={period:.4f} d")
@@ -1986,37 +1386,39 @@ def fitting_periodic_planets(time, flux, flux_err, pers, t0s, depths, ab, intran
 
 
     print('len(t0s)', len(t0s))
-    for iii in range(len(t0s)): 
+    for iii in range(len(pers)): 
+        if pers[iii]>0.25:
 
-        params_df, conv, conv_attempt = pymc_new_general_function(time, flux, flux_err, t0s[iii], [pers[iii], ab, depths[iii]], 'Periodic')
-        if len(params_df)>0:
+            params_df, conv, conv_attempt = pymc_new_general_function(time, flux, flux_err, t0s[iii], [pers[iii], ab, depths[iii]], 'Periodic')
+            if len(params_df)>0:
 
-            T0_, period_, depth_, tdur_, SNR = params_df.loc['t0', 'mean'], params_df.loc['Per', 'mean'], params_df.loc['depth', 'mean'], params_df.loc['dur', 'mean'], params_df.loc['SNR', 'mean']
-            print('params df', params_df)
-            
-            print('checking convergence 1')
-            pd.DataFrame({'TICID':[con.TICID], 't0':[T0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0_, 5))+'_Yconv_per.csv')
+                T0_, period_, depth_, tdur_, SNR = params_df.loc['t0', 'mean'], params_df.loc['Per', 'mean'], params_df.loc['depth', 'mean'], params_df.loc['dur', 'mean'], params_df.loc['SNR', 'mean']
+                print('params df', params_df)
 
-       
-        else:
-            T0_, period_, tdur_, depth_, SNR = np.nan, np.nan, np.nan, np.nan, 0
-            
-            print('checking convergence 2')
-            pd.DataFrame({'TICID':[con.TICID], 't0':[t0s[iii]], 'per':[pers[iii]], 'depth':[depths[iii]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0s[iii], 5))+'_Nconv_per.csv')
-        
-        
-        if not np.isnan(T0_):
-            
-            periods.append(period_)
-            T0_vals.append(T0_)
-            Tdur.append(tdur_)
-            depth.append(depth_)
-            SNR_vals.append(SNR)
+                print('checking convergence 1')
+                pd.DataFrame({'TICID':[con.TICID], 't0':[T0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0_, 5))+'_Yconv_per.csv')
 
-        gc.collect()
 
-        intransit = np.logical_or(intransit, transit_mask(total_time, period_, float((2*tdur_/24)), float(T0_)))
+            else:
+                T0_, period_, tdur_, depth_, SNR = np.nan, np.nan, np.nan, np.nan, 0
 
+                print('checking convergence 2')
+                pd.DataFrame({'TICID':[con.TICID], 't0':[t0s[iii]], 'per':[pers[iii]], 'depth':[depths[iii]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0s[iii], 5))+'_Nconv_per.csv')
+
+
+            if not np.isnan(T0_):
+
+                periods.append(period_)
+                T0_vals.append(T0_)
+                Tdur.append(tdur_)
+                depth.append(depth_)
+                SNR_vals.append(SNR)
+
+            gc.collect()
+
+            intransit = np.logical_or(intransit, transit_mask(total_time, period_, float((1.5*tdur_)), float(T0_)))
+
+    print('params df 3', params_df)
     return T0_vals, periods, depth, Tdur, SNR_vals, intransit, params_df
 
             
@@ -2054,7 +1456,10 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
 #     print('depths', depth_multis)
     
     if len(T0_multis)>0:
-        nt0_vals, nperiods, ndepth, nTdur, nSNR_vals, intransit, params_df = fitting_periodic_planets(time, flux, flux_err, periods_multis, T0_multis, depth_multis, ab, intransit_per, verbose, save_phaseFold, data_file = data_file)
+        
+        sort_indices = np.argsort(periods_multis)
+        
+        nt0_vals, nperiods, ndepth, nTdur, nSNR_vals, intransit, params_df = fitting_periodic_planets(time, flux, flux_err, periods_multis[sort_indices], T0_multis[sort_indices], depth_multis[sort_indices], ab, intransit_per, verbose, save_phaseFold, data_file = data_file)
 
         params_df.loc[len(params_df)] = [None] * len(params_df.columns) 
 
@@ -2076,76 +1481,67 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
     indexes_split = sorted(indexes_split_unorganize, key=lambda x: len(x), reverse=True)
     
     if len(indexes_split) == 1 and (np.any(np.array(periods)<10.) or len(periods)==0):
-        indexes_split_unorganize = breaking_up_data(time, 2.)   
+        indexes_split_unorganize = breaking_up_data(time, break_val = 1.)   
         indexes_split = sorted(indexes_split_unorganize, key=lambda x: len(x), reverse=True)
 
 
 #     print('split indexes lengths: ', [len(x) for x in indexes_split])
-    for iii in range(len(indexes_split)):
-        if len(indexes_split) == 1:
-            print('too few indexes to run again')
-            continue
-#         print('len time', len(new_time))
-        intransit_split = np.array(intransit[indexes_split[iii]])
-        split_time = np.array(time[indexes_split[iii]])
-        split_flux = np.array(flux[indexes_split[iii]])
-        split_flux_err = np.array(flux_err[indexes_split[iii]])
-        
-        
-        if len(split_time)==0:
-            print('WHY ISNT THIS WORKING')
+    if len(indexes_split)>1:
+        for iii in range(len(indexes_split)):
+            if len(indexes_split) == 1:
+                print('too few indexes to run again')
+                continue
+    #         print('len time', len(new_time))
+            intransit_split = np.array(intransit[indexes_split[iii]])
+            split_time = np.array(time[indexes_split[iii]])
+            split_flux = np.array(flux[indexes_split[iii]])
+            split_flux_err = np.array(flux_err[indexes_split[iii]])
 
-            print(indexes_split)
-            continue
-            
-        else:
-            if TLS:
-                periods_multis, T0_multis, Tdur_multis, depth_multis, intransit_small = using_TLS_to_find_periodic_signals(split_time, split_flux, u = ab, verbose = verbose)
+
+            if len(split_time)==0:
+                print('WHY ISNT THIS WORKING')
+
+                print(indexes_split)
+                continue
+
             else:
-                periods_multis, T0_multis, Tdur_multis, depth_multis, intransit_small = using_BLS_recursive(split_time, split_flux, verbose = verbose, intransit = np.full(len(split_time), False), periods = periods.copy(), T0 =T0_vals.copy(), Tdur = Tdur.copy(), depths = depth.copy())
-        
-        intransit[indexes_split[iii]] = np.logical_or(intransit_split, intransit_small)
-                
-            
-        toss_bool = np.isin(np.round(periods_multis, 1), np.round(periods, 1))
+                if TLS:
+                    periods_multis, T0_multis, Tdur_multis, depth_multis, intransit_small = using_TLS_to_find_periodic_signals(split_time, split_flux, u = ab, verbose = verbose)
+                else:
+                    periods_multis, T0_multis, Tdur_multis, depth_multis, intransit_small = using_BLS_recursive(split_time, split_flux, verbose = verbose, intransit = np.full(len(split_time), False), periods = periods.copy(), T0 =T0_vals.copy(), Tdur = Tdur.copy(), depths = depth.copy())
+
+            intransit[indexes_split[iii]] = np.logical_or(intransit_split, intransit_small)
 
 
-        print('periods to not run again', np.array(periods_multis)[toss_bool])
-        
-        if len(np.array(periods_multis[~toss_bool]))>0:
-        
+            toss_bool = np.isin(np.round(periods_multis, 1), np.round(periods, 1))
 
-            nt0_vals_split, nperiods_split, ndepth_split, nTdur_split, nSNR_vals_split, intransit, nparams_df = fitting_periodic_planets(split_time, split_flux, split_flux_err, list(np.array(periods_multis)[~toss_bool]), list(np.array(T0_multis)[~toss_bool]), list(np.array(depth_multis)[~toss_bool]), ab, intransit, verbose, save_phaseFold=False, total_time = time, data_file=data_file)
-        
-            nparams_df.loc[len(nparams_df)] = [None] * len(nparams_df.columns) 
 
-            params.append(nparams_df)
-    
-            periods.extend(nperiods_split)
-            T0_vals.extend(nt0_vals_split)
-            Tdur.extend(nTdur_split)
-            depth.extend(ndepth_split)
-            SNR_vals.extend(nSNR_vals_split)
-            
-            
+            print('periods to not run again', np.array(periods_multis)[toss_bool])
 
-        # intransit[indexes_split[iii]] = np.logical_or(intransit_split, intransit_small_fit)
-        print('done with multis ', iii+1, ':', len(indexes_split))
+            if len(np.array(periods_multis[~toss_bool]))>0:
 
-#     intransit_init[all_good_indxs] = intransit
-#     intransit_indexes =  np.where(intransit)
 
-#     total_time_flux_df['INTRANS_P'] = ~intransit_init
-#     if save_file:
-#         total_time_flux_df.to_csv(data_file, index =False)
+                nt0_vals_split, nperiods_split, ndepth_split, nTdur_split, nSNR_vals_split, intransit, nparams_df = fitting_periodic_planets(split_time, split_flux, split_flux_err, list(np.array(periods_multis)[~toss_bool]), list(np.array(T0_multis)[~toss_bool]), list(np.array(depth_multis)[~toss_bool]), ab, intransit, verbose, save_phaseFold=False, total_time = time, data_file=data_file)
 
-#         print('split indexes lengths: ', [len(x) for x in indexes_split])
-    
+                nparams_df.loc[len(nparams_df)] = [None] * len(nparams_df.columns) 
+
+                params.append(nparams_df)
+
+                periods.extend(nperiods_split)
+                T0_vals.extend(nt0_vals_split)
+                Tdur.extend(nTdur_split)
+                depth.extend(ndepth_split)
+                SNR_vals.extend(nSNR_vals_split)
+
+    print('done with multis ', iii+1, ':', len(indexes_split))
+
+    print('params df 2', params)
+
     only_per_intransit = np.full(len(time), False)
 
     for iii in range(len(periods)):
         print('period is', periods[iii])
-        new_transit_planet = transit_mask(time, periods[iii], (Tdur[iii]/24)+(1/3), T0_vals[iii])
+        new_transit_planet = transit_mask(time, periods[iii], Tdur[iii], T0_vals[iii])
         print('intransit '+str((iii+1)*7), new_transit_planet, len(np.where(new_transit_planet)[0]), len(new_transit_planet))
 
         only_per_intransit = np.logical_or(only_per_intransit,new_transit_planet)
@@ -2153,89 +1549,8 @@ def searching_for_periodic_signals(data_file, ab, TLS = False, verbose = True, s
 
     intransit_indexes =  np.where(only_per_intransit)
     
-#     print('checking differences in intransit arrays')
-#     differences = (intransit != only_per_intransit)
-
-#     # Count the number of True values (differences)
-#     num_differences = np.sum(differences)
-#     print(f'there are {num_differences} between the two')
-    
-#     final_intransit = np.full(len(time), False)
-#     final_intransit[all_good_indxs] = only_per_intransit
-    
     return periods, T0_vals, Tdur, depth, only_per_intransit, SNR_vals,intransit_indexes, params
 
-
-def find_common_element_indices(arrays):
-    if not arrays or len(arrays) < 2:
-        return [], {}
-
-    
-    all_elements = [element for arr in arrays for element in arr]
-    elements, indxs, cnts = np.unique(np.round(all_elements, 2), return_index = True, return_counts = True)
-    
-    common_elements = elements[np.where(cnts>1)]
-    print(common_elements)
-    
-    result = {}
-    for ele in common_elements:
-        result[ele] = []
-        for i, arr in enumerate(arrays):
-            if np.isin(ele, np.round(arr, 2)):
-                result[ele].append((i, list(np.round(arr,2)[0]).index(ele)))
-    return common_elements, result# Example usage:
-
-
-
-def checking_aliases_repeated_periodic_planets(per_ary, t0_ary, q_ary):
-    final_indexs = np.full(len(per_ary), True)
-    all_t0 = []
-    for iii in range(len(per_ary)):
-        all_t0.append([t0_ary[iii] + per_ary[iii]*np.arange(-50, 50)])
-    rep_t0, indxs_of_rep_t0 = find_common_element_indices(all_t0)
-    for t0 in rep_t0:
-        indx_t0 = set(np.array(indxs_of_rep_t0[np.round(t0, 2)])[:,0])
-#         print('indexes: ', indx_t0)
-        bad_ndx = np.where(np.array(q_ary) == min([q_ary[x] for x in indx_t0]))
-        final_indexs[bad_ndx] = False
-    print('final_indxs', final_indexs)
-    return final_indexs
-
-
-def checking_multiples_and_duplicate_periodic_planets(per_ary, t0_ary, d_ary, q_ary): 
-    final_indexs = np.full(len(per_ary), True)
-    div_period_ary = np.ones(len(per_ary))
-    
-    multiple_indxs = check_multiples(per_ary)
-    for ndxs in multiple_indxs:
-        i, j = ndxs
-        if np.abs(per_ary[i]/per_ary[j] - 1) < 0.03 and np.abs(d_ary[i]/d_ary[j] - 1) > 0.1:
-            print('likely a binary')
-            final_indexs[[i, j]] = False
-            
-        else:
-            
-            if np.abs(per_ary[i]/per_ary[j] - 1) >= 0.03:
-                bad_ndx = np.where(np.array(q_ary) == min((q_ary[i], q_ary[j])))
-#                 print('this should be int val', bad_ndx, 'and it should be one of these 2 vals', i, j)
-                final_indexs[bad_ndx] = False
-                
-            if  np.abs(per_ary[i]/per_ary[j] - 1) < 0.03:
-                t0_diff   = (t0_ary[i] - t0_ary[j])/per_ary[i]
-                new_indxs = check_multiples([t0_diff, per_ary[i]])
-                
-                if len(new_indxs) >0: 
-                    bad_ndx = np.where(np.array(q_ary) == min((q_ary[i], q_ary[j])))
-                    good_ndx = np.where(np.array(q_ary) == max((q_ary[i], q_ary[j])))
-
-                    final_indexs[bad_ndx] = False
-                    div_period_ary[good_ndx] = max([t0_diff/per_ary[i], per_ary[i]/t0_diff])
-    
-    rep_t0_final_indxs = checking_aliases_repeated_periodic_planets(per_ary, t0_ary, q_ary)
-                      
-    final_indexs = np.logical_and(rep_t0_final_indxs, final_indexs)
-    print('keeping these periods', np.array(per_ary)[final_indexs])
-    return final_indexs, div_period_ary
 
 
 
@@ -2251,6 +1566,8 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
     periods_multi, T0_multi, Tdur_multi, depth_multi, intransit, SNR, n, params = searching_for_periodic_signals(data_file, ab, TLS,  verbose, save_file = save_intrans)
     if len(params)>0:
         params = pd.concat(params)
+        
+    print('params df 1', params)
     print('init number of periodic planets', len(periods_multi),  periods_multi)
     nnn = 0
 
@@ -2363,16 +1680,13 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
         total_flux = total_flux[~intransit]
         total_flux_err = total_flux_err[~intransit]
 
-    indexes_split_unorganize = breaking_up_data(total_time, 1.5)  
+    indexes_split_unorganize = breaking_up_data(total_time, break_val = 1., min_size = 1.)  
     all_good_indxs = []
 
     if len(indexes_split_unorganize)>1:
         diff_ary = np.array([max(np.array(total_time)[x])-min(np.array(total_time)[x]) for x in indexes_split_unorganize])
-#         for iii in range(len(diff_ary)):
-#             if diff_ary[iii]>1:
-#                 all_good_indxs.extend(indexes_split_unorganize[iii])
-# #         for 
         all_good_indxs =np.concatenate(list(itertools.compress(indexes_split_unorganize, diff_ary>1))).ravel()
+   
     if len(all_good_indxs) == 0: 
         all_good_indxs = list(range(len(total_time)))
         
@@ -2390,153 +1704,83 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
     ab, smass, smass_min, smass_max, sradius, sradius_min, sradius_max = get_catalog_info(ticid, df = catalog_df)
 #     print('val', ab)
     
-    bboxes = DT_analysis(total_time, total_flux, total_flux_err, confidence)
-#     print('ran bboxes', bboxes)
+    params_df = []
 
-    print('number singles found', len(bboxes))
-    t0_singles, dur_singles, depth_singles = [],[],[]
-    if len(bboxes)>0:
-        n_events = len(bboxes)
-        for j, boxes in enumerate(bboxes):
-            t0_singles.append(boxes[1])
-            dur_singles.append(boxes[3])
-            depth_singles.append(1-boxes[4])
-            
-            fig = plt.figure(figsize = (8, 8))
+    if len(total_time)>0:
 
-            ax = fig.add_subplot(111)
-            ax.set_xlim(boxes[1]-2*boxes[3], boxes[1]+2*boxes[3])
+        bboxes = DT_analysis(total_time, total_flux, total_flux_err, confidence)
+    #     print('ran bboxes', bboxes)
 
-#             ax.set_ylim(1-3.5*np.median(total_flux_err), 1+3.5*np.median(total_flux_err))
-            ax.scatter(total_time, total_flux, color = 'k', marker ='o', zorder = 1E6)
-            detrended_lc = make_LightKurveObject(total_time, total_flux, total_flux_err)
-            
-            plot_lc_with_bboxes(detrended_lc, bboxes, ms=3, marker='.', lw=0, ax = ax)
-            
-            plt.show()
+        print('number singles found', len(bboxes))
+        t0_singles, dur_singles, depth_singles = [],[],[]
+        if len(bboxes)>0:
+            n_events = len(bboxes)
+            for j, boxes in enumerate(bboxes):
+                t0_singles.append(boxes[1])
+                dur_singles.append(boxes[3])
+                depth_singles.append(1-boxes[4])
 
-#         if verbose: 
-        
-# #             indexes = breaking_up_data(total_time, 27)
-# #             print(len(indexes))
-#             for iii in range(len(indexes)):
+                fig = plt.figure(figsize = (8, 8))
 
-#                 new_time = total_time[np.array(indexes[iii])]
-#                 new_flux = total_flux[p.array(indexes[iii])]
-#                 new_flux_err = total_flux_err[p.array(indexes[iii])]
+                ax = fig.add_subplot(111)
+                ax.set_xlim(boxes[1]-2*boxes[3], boxes[1]+2*boxes[3])
+
+    #             ax.set_ylim(1-3.5*np.median(total_flux_err), 1+3.5*np.median(total_flux_err))
+                ax.scatter(total_time, total_flux, color = 'k', marker ='o', zorder = 1E6)
+                detrended_lc = make_LightKurveObject(total_time, total_flux, total_flux_err)
+
+                plot_lc_with_bboxes(detrended_lc, bboxes, ms=3, marker='.', lw=0, ax = ax)
+
+                plt.show()
 
 
-#                 gc.collect()
-
-            #         print(detrended_lc)
-
-#                 fig = plt.figure(figsize = (24, 8))
-
-#                 ax = fig.add_subplot(111)
-#                 ax.xaxis.set_major_locator(ticker.MultipleLocator(25)) 
-#                 for spine in ['top', 'right']:
-#                     ax.spines[spine].set_visible(False)
-#                 ax.tick_params(color='k', labelcolor='k')
-
-#                 plot_lc_with_bboxes(detrended_lc, bboxes, ms=3, marker='.', lw=0, ax = ax)
-
-#                 ax.set_ylim(1-3.5*np.std(new_flux), 1+3.5*np.std(new_flux))
-#                 plt.show()
-
-#     if run_1:
-#         init_periodic_singles = []
-#     else:
-#         init_periodic_singles = check_if_singles_are_periodic(t0_singles)
+        t0_singles    = np.array(t0_singles)
+        dur_singles   = np.array(dur_singles)
+        depth_singles = np.array(depth_singles)
 
 
-    t0_singles = np.array(t0_singles)
-    dur_singles = np.array(dur_singles)
-    depth_singles = np.array(depth_singles)
-
-#     if run_1:: 
-#         t0_singles = np.array(t0_singles)
-#         dur_singles = np.array(dur_singles)
-#         depth_singles = np.array(depth_singles)
-#     else: 
-#         t0s_ = []
-#         dur_singles_
-        
-#         for iii in range(len(t0_singles)):
-#             model_flux = build_box_model(total_time, duration, t0)
-#             model_long_box  = build_box_model(total_time, t0, duration/2, depth*1.5)
-#             model_wide_box  = build_box_model(total_time, period, t0, duration*2, depth/1.5)
-
-#             null_flux = np.ones_like(total_flux)
-
-#             logL_transit = compute_log_likelihood(total_flux, model_flux, total_flux_err)
-#             logL_long_box = compute_log_likelihood(total_flux, model_long_box, total_flux_err)
-#             logL_wide_box = compute_log_likelihood(total_flux, model_wide_box, total_flux_err)
-
-#             logL_null = compute_log_likelihood(total_flux, null_flux, total_flux_err)
-
-#             n, k = len(time_new), 3
-#             bic_transit = compute_BIC(logL_transit, n, 3)
-#             bic_long_box  = compute_BIC(logL_long_box, n, 3)
-#             bic_wide_box  = compute_BIC(logL_wide_box, n, 3)
-
-#             bic_null = compute_BIC(logL_null, n, 1)
-#             delta_BIC = bic_null - bic_transit
-
-#             delta_BIC_box = (bic_wide_box + bic_long_box)/2 - bic_transit
-
-#             if verbose:
-#                 print(f"ΔBIC={delta_BIC:.2f}, ΔBIC_Box={delta_BIC_box:.2f}  (threshold={min_delta_BIC})")
-
-#             if use_AIC:
-#                 aic_transit = compute_AIC(logL_transit, k)
-#                 print(f"AIC={aic_transit:.2f}")
-
-
-
-
-
-#     print('depths: ',depth_singles)
-    
    
 
-    new_T0_periodic = []
-    planet_name = 0
-    params_df = []
-    
-    for sss in range(len(t0_singles)):
-        print(sss)
-        planet_name+=1
+        new_T0_periodic = []
+        planet_name = 0
+        params_df = []
 
-        if run_1:
-            planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_singles[sss], dur_singles[sss], depth_singles[sss]]
-       
-       
-        else:
-        
-            new_params, conv, conv_attempt = pymc_new_general_function(np.array(total_time), total_flux, total_flux_err, t0_singles[sss], [dur_singles[sss], ab, depth_singles[sss]], 'Single')
-            
-            if len(new_params)>0:
+        for sss in range(len(t0_singles)):
+            print(sss)
+            planet_name+=1
 
-                params_df.append(new_params)
-            
+            if run_1:
+                planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_singles[sss], dur_singles[sss], depth_singles[sss]]
 
-                t0_, period_, depth_, tdur_, q = new_params.loc['t0', 'mean'], new_params.loc['Per', 'mean'], new_params.loc['depth', 'mean'], new_params.loc['dur', 'mean'], new_params.loc['SNR', 'mean']
-           
-                print('checking convergence 3')
-
-                pd.DataFrame({'TICID':[con.TICID], 't0':[t0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_, 5))+'_Yconv_single.csv')
 
             else:
-                print('checking convergence 4')
 
-                pd.DataFrame({'TICID':[con.TICID], 't0':[t0_singles[sss]], 'per':[np.nan], 'depth':[depth_singles[sss]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_singles[sss], 5))+'_Nconv_single.csv')
+                new_params, conv, conv_attempt = pymc_new_general_function(np.array(total_time), total_flux, total_flux_err, t0_singles[sss], [dur_singles[sss], ab, depth_singles[sss]], 'Single')
 
-            
-            if not np.isnan(t0_):
-                planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_, tdur_,depth_, q]
-    if len(params_df)>0:
-        params_df = pd.concat(params_df)
-    print('params df singles', params_df)
+                if len(new_params)>0:
+
+                    params_df.append(new_params)
+
+
+                    t0_, period_, depth_, tdur_, q = new_params.loc['t0', 'mean'], new_params.loc['Per', 'mean'], new_params.loc['depth', 'mean'], new_params.loc['dur', 'mean'], new_params.loc['SNR', 'mean']
+
+                    print('checking convergence 3')
+                    if not np.isnan(t0_):
+                        planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_, tdur_,depth_, q]
+
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[t0_], 'per':[period_], 'depth':[depth_], 'converged': [True], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_, 5))+'_Yconv_single.csv')
+
+                else:
+                    print('checking convergence 4')
+
+                    pd.DataFrame({'TICID':[con.TICID], 't0':[t0_singles[sss]], 'per':[np.nan], 'depth':[depth_singles[sss]], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(t0_singles[sss], 5))+'_Nconv_single.csv')
+
+
+#                 if not np.isnan(t0_):
+#                     planet_df.loc[len(planet_df.index)] = [int(ticid), int(planet_name), np.inf, t0_, tdur_,depth_, q]
+        if len(params_df)>0:
+            params_df = pd.concat(params_df)
+        print('params df singles', params_df)
 
     return planet_df, params_df
 
@@ -2673,725 +1917,6 @@ def predict_lc(time_lc,t0,P,rp_rs,cosi,a,u1,u2,cad):
 
 
 
-def MCMC_for_planet_parameters(time, flux, uncertainty, period, t0, ab, verbose = True, dur = 0):
-    
-
-    period_unc = 0.01
-    if period == np.inf:
-        period = 365.
-        period_unc = 1.
-   
-    ini_names = ['t0','per','rp','cosi','a','u1','u2','norm']
-    ini  = np.array([t0,period,0.01,0.,period,.3,.3,1.0],dtype=float)
-    ndim = len(ini)
-    err  = np.array([0.001,period_unc, 0.001,0.01,0.01, 0.1, 0.1,0.01])
-    pos  = [ini+5e-3*err*np.random.randn(ndim) for rrr in range(NUM_WALKERS)]
-
-    ff=flux
-    uu=uncertainty
-    tt=time
-    PP=period
-    cad= np.min(np.diff(time))
-    u1, u2 = ab
-    global PARAMS
-    
-    if dur == 0:
-
-        PARAMS = [flux,uncertainty,time,cad,t0, u1, u2]
-
-        
-    else:
-        use_flux = flux[np.abs(time-t0)<(10*dur/24.)]
-        use_unc  = uncertainty[np.abs(time-t0)<(10*dur/24.)]
-        use_time = time[np.abs(time-t0)<(10*dur/24.)]
-        PARAMS   = [use_flux,use_unc,use_time,cad,t0, u1, u2]
-
-    with Pool(8) as pool:
-        
-        sampler = emcee.EnsembleSampler(NUM_WALKERS,ndim,lnprob_MCMC_global,pool=pool)
-
-        sampler.run_mcmc(pos,NCHAIN,progress=True)
-
-    del globals()['PARAMS']
-    
-    samples = sampler.chain[:, BCHAIN:, :].reshape((-1,ndim))
-    
-    if verbose: 
-        fig = corner.corner(samples, labels = ini_names)
-        plt.show()
-
-    report = list(map(lambda v: (v[1], v[2]-v[1], v[1]-v[0]), zip(*np.percentile(samples, [16, 50, 84],axis=0))))
-#     print('making corner plot')
-#     fig = corner.corner(samples, labels=ini_names)
-#     plt.show()
-#     print('done with corner plot')
-    t0 = report[0][0]
-    per = report[1][0]
-    rp = report[2][0]
-    cosi = report[3][0]
-    v=np.percentile(np.arccos(samples[:,3])*180/np.pi, [50, 16, 84])
-    i = (v[1], v[2]-v[1], np.abs(v[1]-v[0])) 
-    i = i[0]
-    u1 = u1
-    u2 = u2
-    a = report[4][0]
-    norm = report[5][0]
-    b = np.abs(a*cosi)
-    depth = rp**2.
-    T0 = (per*24.)/(a*np.pi)
-    tau = rp*T0/np.sqrt(1.-(b**2.))
-    dur = np.sqrt(1.-(b**2.))*T0+tau
-    win = dur*2
-    intran = np.where(np.abs(time-t0)<(dur/2./24.))
-    outran = np.where(time[~intran])
-    uq = np.full(len(flux),np.std(flux[outran]))
-    sigs  = np.mean(uq[intran])
-    Q = np.sqrt(len(intran))*depth/sigs
-#     Q = np.sqrt(np.sum((1.-flux[intran])/uq[intran]))
-    result = [report[0],rp,per,cosi,i, a,u1,u2,norm,b,depth,dur,win,tau,Q]
-    if verbose: 
-        result_name = ['t0','rp','per','cosi','i', 'a','u1','u2','norm','b','depth','dur','win','tau','Q']
-#         for iii in range(len(result)):
-#             print(result_name[iii],result[iii])
-    return [t0, per, depth, dur, rp, cosi, a, b, u1, u2, norm, win, tau, Q]
-
-
-# In[ ]:
-
-def calculating_posterior_distributions(chains, time, sample_size, u1, u2, cad, have_per = True):
-    a,b,c = chains.shape
-    param_rand = np.zeros((sample_size, c))
-    models = np.zeros((sample_size, len(time)))
-
-    param_sample = chains.reshape((a*b, c))
-
-    np.random.seed(42)
-    rand_indx = np.random.randint(0, a*b, sample_size)
-
-    for iii in range(sample_size):
-        if have_per:
-
-            t0,per,rp,cosi,a,norm = param_sample[rand_indx[iii]]
-        else:
-            t0,rp,cosi,a,norm = param_sample[rand_indx[iii]]
-            per = max(time) - min(time)
-        models[iii, :] =  predict_lc(time,t0,per,rp,cosi,a,u1,u2,cad)
-    
-    med_flux = np.zeros(len(time))
-    up_flux  = np.zeros(len(time))
-    dwn_flux = np.zeros(len(time))
-
-    for jjj in range(len(time)):
-        med_flux[jjj], up_flux[jjj], dwn_flux[jjj] = np.percentile(models[:, jjj], [50, 84, 16])
-
-    return med_flux, up_flux, dwn_flux
-
-    
-    
-
-def addChain(*args):
-    temp = [arg for arg in args if arg is not None]
-    if len(temp) > 1:
-        return np.concatenate(temp, axis=0)
-    else:
-        return np.array(temp[0])
-    
-    
-
-
-def general_mcmc_function(time, flux, unc, t0, other_pars, type_fn, data_file = "", verbose = True, chain_diff = 0):
-    # np.random.seed(42)
-        
-#     time_here = tm.time()
-#     print('original data cadence: ', 24*60*np.median(np.diff(time)))
-#     time, flux, unc = bin_data_with_diff_cadences_many_args(time, flux = flux, unc = unc, min_cad = 10/60/24)
-#     print('time to bin: ', (tm.time()-time_here)/60, 'minutes' )
-#     print('used data cadence: ', 24*60*np.median(np.diff(time)))
-    always_keep = False
-    if chain_diff>0:
-        always_keep = True
-    
-
-    global PARAMS
-#     print('data file 3', data_file)
-    if len(data_file)>0:
-        target = str(data_file.split('/')[-2])
-    
-    mask = np.logical_or(np.logical_or(np.isnan(flux),  np.isnan(time)),  np.isnan(unc))
-    time = time[~mask]
-    unc  = unc[~mask]
-    flux = flux[~mask]
-
-#     else:
-#         target = 'no_name_'
-
-    cad = np.min(np.diff(time))*60.*24.
-    
-#     filename = target[6:-10]+'_'+type_fn+'_'+"backend.h5"
-    
-    if type_fn == 'Single':
-        dur, ab, depth = other_pars
-#         print('single; depth going into MCMC (should be SMALL)', depth)
-
-        per = np.max(time)-np.min(time)
-        u1, u2 = ab
-
-        ini_names = ['t0','rp','cosi','a', 'norm']
-        ini = np.array([t0,np.sqrt(depth),0.,per, 1.0],dtype=float)
-        ndim = len(ini)
-        
-        err = np.array([0.001,0.001,0.05,0.1, 0.01])
-        pos = [ini+5e-3*err*np.random.randn(ndim) for rrr in range(NUM_WALKERS)]
-        
-        indxes = np.where(np.abs(time-t0)<(1.+dur/24.))
-        use_flux = np.array(flux)[indxes]
-        use_unc  = np.array(unc)[indxes]
-        use_time = np.array(time)[indxes]
-        cad = np.min(np.diff(use_time))*60.*24.
-
-        PARAMS   = [use_flux,use_unc,use_time,per,cad,t0, u1, u2]
-        mcmc_func = lnprob_MCMC_global_single
-
-    elif type_fn == 'Periodic':
-        per, ab, depth = other_pars
-        print('periodic; starting period', per)
-
-        ini_names = ['t0','per','rp','cosi','a','norm']
-        ini  = np.array([t0,per,np.sqrt(depth),0.,per,1.0],dtype=float)
-        ndim = len(ini)
-        
-        err  = np.array([0.001,0.001, 0.001,0.01,0.1,0.01])
-        pos  = [ini+5e-3*err*np.random.randn(ndim) for rrr in range(NUM_WALKERS)]
-        u1, u2 = ab
-        use_flux = np.array(flux)
-        use_unc  = np.array(unc)
-        use_time = np.array(time)
-        
-        PARAMS   = [use_flux,use_unc,use_time,cad,t0, u1, u2]
-        mcmc_func = lnprob_MCMC_global
-
-#     backend = emcee.backends.HDFBackend(filename)
-#     backend.reset(NUM_WALKERS, ndim)
-
-
-    # with Pool(8) as pool:
-        
-        # sampler = emcee.EnsembleSampler(NUM_WALKERS,ndim,mcmc_func,pool=pool, backend=backend)
-
-    #     sampler.run_mcmc(pos,max_n,progress=True)
-
-    # samples = sampler.chain[:, BCHAIN:, :].reshape((-1,ndim))
-    sampler = emcee.EnsembleSampler(NUM_WALKERS,ndim,mcmc_func)#, backend=backend)
-
-    # index = 0
-
-    # autocorr = np.empty(max_n)
-
-    # # This will be useful to testing convergence
-    # old_tau = np.inf
-    
-    # # Now we'll sample for up to max_n steps
-    # for sample in sampler.sample(coords, iterations=max_n, progress=True):
-    #     # Only check convergence every 100 steps
-    #     if sampler.iteration % 100:
-    #         continue
-    
-    #     # Compute the autocorrelation time so far
-    #     # Using tol=0 means that we'll always get an estimate even
-    #     # if it isn't trustworthy
-    #     tau = sampler.get_autocorr_time(tol=0)
-    #     autocorr[index] = np.mean(tau)
-    #     index += 1
-    
-    #     # Check convergence
-    #     converged = np.all(tau * 100 < sampler.iteration)
-    #     converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
-    #     if converged:
-    #         break
-    #     old_tau = tau
-
-    index = 0
-
-    finished = False
-    step = 0
-    tol = 20
-    state = pos
-    max_n = 2E4 - chain_diff
-    print('max steps', max_n)
-    pbar = tqdm(total=max_n)
-    
-    while ((not finished) and (step<max_n+1)):
-        state = next(sampler.sample(state, iterations=1))
-    
-        p = state.coords
-        ln_prob = state.log_prob
-
-        if step == 0:
-            chain = addChain(p[np.newaxis,:,:])
-            prob = addChain(ln_prob[:,np.newaxis])
-            
-        else:
-            chain = addChain(chain, p[np.newaxis,:,:])
-            prob = addChain(prob, ln_prob[:,np.newaxis])
-
-        if step % 500 == 0:
-            try:
-                result_params = chain[500:, :, :]
-                testing = [np.percentile(result_params[:, :, x], [50, 16, 84]) for x in range(ndim)]
-                
-            except Exception as err:
-#                 print(err)
-                result_params = chain[-500:,:,:]
-                
-            t0_try,per_try,rp_try,cosi_try,a_try,norm_try = 0, 0, 0, 0, 0, 0
-            
-            model_time = np.arange(min(time),max(time),1/48)
-            
-            if type_fn == 'Periodic':
-                
-                t0_try,per_try,rp_try,cosi_try,a_try,norm_try = list(map(lambda v:(v[0], np.abs(v[0]-v[1]), np.abs(v[2]-v[0])),[np.percentile(result_params[:, :, x], [50, 16, 84]) for x in range(ndim)]))
-
-                med_model_flux, u_lim_model_flux, dwn_lim_model_flux = calculating_posterior_distributions(result_params, model_time, 750, u1, u2, cad)
-                
-            elif type_fn == 'Single':
-                
-                t0_try,rp_try,cosi_try,a_try,norm_try =list(map(lambda v: (v[0], np.abs(v[0]-v[1]), np.abs(v[2]-v[0])), [np.percentile(result_params[:, :, x], [50, 16, 84]) for x in range(ndim)]))
-                per_try = np.array([per, per/2, per/2])
-
-                med_model_flux, u_lim_model_flux, dwn_lim_model_flux = calculating_posterior_distributions(result_params, model_time, 750, u1, u2, cad, have_per = False)
-            
-            # flux_theo_try = predict_lc(model_time,t0_try[0],per_try[0],rp_try[0],cosi_try[0],a_try[0],u1,u2,cad)
-
-            try:
-                
-                tau = sampler.get_autocorr_time(tol=tol)
-                if step==max_n:
-                    flat_step_taus = step_taus.flatten()
-
-#                     print('mean of all step_taus ', np.nanmean(flat_step_taus))
-
-                    # print('mean of step_taus by param: ', [ini_names[x]+': mean: '+str(np.nanmean(step_taus[:, x]))+' max: '+str(np.nanmax(step_taus[:, x])) for x in range(ndim)])
-#                     print('t0 properties: ', ini_names[0]+': mean: '+str(np.nanmean(step_taus[:, 0]))+', median: '+str(np.nanmedian(step_taus[:, 0]))+' max: '+str(np.nanmax(step_taus[:, 0])))
-
-#                     print('last step_tau: ', step_taus[-1])
-                    
-                if not np.any(np.isnan(tau)):
-                    print(f"step {step} progress {step/(tau*tol)} current effective number of samples {step/tau}")
-
-                    finished = True 
-                    print('hurray!')
-
-                    
-            except emcee.autocorr.AutocorrError as err:
-
-                tau = err.tau
-
-#                 print(f"step {step} progress {step/(tau*tol)} current effective number of samples {step/tau}")
-
-                
-                if step == max_n: 
-                    print(step)
-                    last_step_taus = step_taus[-1]
-                    mean_not_norm = np.mean(last_step_taus[:-1])
-                    
-                    check_for_singles = np.all(last_step_taus[1:-1]<mean_not_norm) and last_step_taus[0]>mean_not_norm
-                    
-                    if (len(last_step_taus[last_step_taus > tol]) > 1 and not (type_fn == 'Single' and check_for_singles)):
-                        print('tolerance', tol, 'med', np.median(last_step_taus))
-
-                        print(f'current number of effective steps {step/(tau)}', 'good enough')
-                        finished = True
-
-        if step == 0:
-                        
-            taus = addChain(tau[:,np.newaxis])
-            step_taus = np.array([step/tau])
-
-        else:
-            taus = addChain(taus, tau[:,np.newaxis])
-
-            step_tau = step/tau
-            step_taus = np.concatenate((step_taus, np.array([step_tau])))
-
-        if finished or step == max_n:
-            # print('step ', step)
-            # print('step taus', step_taus)
-#             print('was this ever good enough? ', len(np.where(step_taus>tol)[0])>0)
-#             print('mean of all step_taus ', np.nanmean(step_taus.flatten()))
-            print('mean last step tau', np.nanmean(step_taus[-1]))
-#             print('t0 properties: ', ini_names[0]+': mean: '+str(np.nanmean(step_taus[:, 0]))+', median: '+str(np.nanmedian(step_taus[:, 0]))+' max: '+str(np.nanmax(step_taus[:, 0])))
-            print('last step_tau: ', step_taus[-1])
-            
-            
-#             CSV_tau_files
-#             with PdfPages('./DV_reports/'+os.path.dirname(data_file).split('/')[-1]+'.pdf') as pdf: #+str(planet_num)+'.pdf') as pdf:
-
-#             fig0 = plt.figure(figsize=(8.5, 11),constrained_layout=True,dpi=100)
-#             gs = fig0.add_gridspec(2,1,height_ratios=[1, 1.5], hspace = 0.1) #create grid for subplots - makes it easier to assign where each plot goes
-
-#             gs0 = gs[0].subgridspec(1, 2)
-#             ax1 = [fig0.add_subplot(gs0[0,0]), fig0.add_subplot(gs0[0,1])]
-
-#             gs1 = gs[1].subgridspec(2, 3)   
-#             ax_new = [fig0.add_subplot(gs1[x,y]) for x in range(2) for y in range(3)]
-
-
-# #             ax1 = plt.subplots(gs0)
-            
-#             ax1[0].scatter(time, flux/np.nanmedian(flux), color = 'k', s = 3, zorder = 10, alpha= 0.75)
-#             ax1[0].plot(model_time , med_model_flux, color = 'r', lw = 0.8, alpha = 0.8, zorder = 40)
-#             ymi, yma= ax1[0].get_ylim()
-#             xmi, xma= ax1[0].get_xlim()
-#             n_up_per = np.round(np.abs(xma - t0_try[0])/per_try[0])
-#             n_dwn_per = np.round(np.abs(xmi - t0_try[0])/per_try[0])
-#             all_t0 = t0_try[0] + per_try[0]*np.arange(-1*n_dwn_per, n_up_per)
-#             ax1[0].vlines(t0_try[0], ymi, yma, alpha = 0.5, zorder=0, lw = 2.5, color = 'orange')
-#             ax1[0].vlines(all_t0, ymi, yma, alpha = 0.5, zorder=0, lw = 0.75, color = 'orange')
-#             ax1[0].vlines(t0,     ymi, yma, alpha = 0.5, zorder=0, lw = 1.5, color = 'green')
-#             ax1[0].set_xlim(xmi, xma)
-
-#             x = ((time - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-#             x_model = ((model_time - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-#             m = np.abs(x) < 1.
-#             m_model = np.abs(x_model) <1.
-
-#             phase_x_model = np.linspace(-1., 1., 1000)
-#             phase_flux_model= predict_lc(phase_x_model,0,per_try[0],rp_try[0],cosi_try[0],a_try[0], u1, u2, cad)
-
-
-#             t0_diff = ((t0 - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-
-#             ax1[1].scatter(x[m], flux[m]/np.nanmedian(flux), color = 'k', s = 3, zorder = 10, alpha = 0.75)
-#             ax1[1].plot(phase_x_model, phase_flux_model, color = 'r',lw = 2, alpha = 0.8, zorder = 40)
-#             ax1[1].fill_between(x_model[m_model], u_lim_model_flux[m_model], dwn_lim_model_flux[m_model], color='r', alpha=0.25)
-
-# #                 axes[1].plot(x_model[m_model], med_model_flux[m_model],      color = 'r',lw = 2, alpha = 0.8, zorder = 40)
-# #                 axes[1].scatter(x_model[m_model],  u_lim_model_flux[m_model], color = 'purple', alpha=0.5, s=3)
-# #                 axes[1].scatter(x_model[m_model], dwn_lim_model_flux[m_model], color = 'brown', alpha=0.5, s = 3)
-
-# #                 ymi, yma= axes[1].get_ylim()
-
-#             ax1[1].vlines(0, ymi, yma, alpha = 0.6, zorder=0, lw = 1.5, color = 'orange')
-#             ax1[1].vlines(t0_diff, ymi, yma, alpha = 0.6, zorder=0, lw = 1.5, color = 'green')
-#             ax1[1].set_xlim(-0.75, 0.75)
-# #             plt.show()
-# #             plt.close()
-# #             ax_new = plt.subplots(gs1).reshape(1,6)[0]
-
-#             for iii in range(ndim):
-#                 param = ini_names[iii]
-#                 ax_new[iii].plot(list(range(len(chain[:,:,iii]))), chain[:,:,iii])
-
-#                 ax_new[iii].set_ylabel(param)
-#                 # print('num chains', np.shape(chain))
-
-            
-#             else:
-#                 print('these are my result values: ', [t0_try,rp_try,cosi_try,a_try,norm_try])
-
-
-
-#             plt.show()
-
-        step = step + 1
-        pbar.update(1)
-    pbar.close()
-
-    print('step num ', step, 'finished? ', finished)
-
-
-    
-    print("done processing")
-       
-        
-    burn = int(np.ceil(max_n*2/3))
-#     burn = int(np.ceil(np.nanmax(taus)) * 2)
-    
-#     burn_chain = chain[:,:burn,:]
-#     burn_prTT prob[:,:burn]
-    
-    if step<burn+10:
-        burn = int(np.ceil(step/2))
-    new_chain = chain[:,burn:,:]
-    new_prob = prob[:,burn:]
-    
-#     print("finished")
-
-    samples = sampler.chain[:, burn:, :].reshape((-1,ndim))
-    xxx =  str(np.nanmean(step_taus[-1, 0])).split('.')
-    if not np.abs(step_taus[-1, 0])>0:
-        xxx = ['bad', 'nan']
-        
-        
-#     print('this is number', xxx)
-    
-#     print('data file 4', data_file.split('/'))
-    target_source = os.path.dirname(data_file).split('/')
-    if (not finished) and (step>=max_n):
-        add_str = 'N'
-        kept = False
-    else:
-        add_str = 'Y'
-        kept = True
-
-    if len(target_source)<3:
-        target_source = data_file.split('/')
-    fileName = '../saving_MCMC_plots/'+target_source[-1][:-10]+xxx[0]+'_'+xxx[1][:3]+add_str+'.pdf'
-
-    ticid = target_source[-1].split('tic-')[1].split('_')[0]
-    print('saving all to csv')
-    names = ['TICID','Nsteps','kept?', 'P/S', 'mean_last_st', 'med_last_st']+ini_names
-    vals = [ticid,step, kept, type_fn, np.mean(step_taus[-1]), np.median(step_taus[-1])]+list(step_taus[-1])
-
-    print('vals look like? ', vals)
-    saving_vals_dict = {key: [value] for key, value in zip(names, vals)}
-    pd.DataFrame(saving_vals_dict).to_csv('./CSV_tau_files/ticid_'+ticid+'-savingVals4Comparison_'+xxx[0]+'_'+xxx[1][:3]+'.csv')
-#     print('file name', fileName)
-    with PdfPages(fileName) as pdf: #+str(planet_num)+'.pdf') as pdf:
-
-        fig0 = plt.figure(figsize=(8.5, 11),constrained_layout=True,dpi=100)
-        gs = fig0.add_gridspec(2,1 ,height_ratios=[1.5, 2], hspace = 0.1) #create grid for subplots - makes it easier to assign where each plot goes
-
-        gs0 = gs[0].subgridspec(2, 2)
-        ax1 = [fig0.add_subplot(gs0[0,0]), fig0.add_subplot(gs0[0,1]), fig0.add_subplot(gs0[1,0])]
-
-        gs1 = gs[1].subgridspec(3,2)   
-        ax_new = [fig0.add_subplot(gs1[x,y]) for x in range(3) for y in range(2)]
-
-
-#             ax1 = plt.subplots(gs0)
-
-        ax1[0].scatter(time, flux/np.nanmedian(flux), color = 'k', s = 3, zorder = 10, alpha= 0.75)
-        ax1[0].plot(model_time , med_model_flux, color = 'r', lw = 0.8, alpha = 0.8, zorder = 40)
-        ymi, yma= ax1[0].get_ylim()
-        xmi, xma= ax1[0].get_xlim()
-        n_up_per = np.round(np.abs(xma - t0_try[0])/per_try[0])
-        n_dwn_per = np.round(np.abs(xmi - t0_try[0])/per_try[0])
-        all_t0 = t0_try[0] + per_try[0]*np.arange(-1*n_dwn_per, n_up_per)
-        ax1[0].vlines(t0_try[0], ymi, yma, alpha = 0.5, zorder=0, lw = 2.5, color = 'orange')
-        ax1[0].vlines(all_t0, ymi, yma, alpha = 0.5, zorder=0, lw = 0.75, color = 'orange')
-        ax1[0].vlines(t0,     ymi, yma, alpha = 0.5, zorder=0, lw = 1.5, color = 'green')
-        ax1[0].set_xlim(xmi, xma)
-
-        x = ((time - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-        x_model = ((model_time - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-        m = np.abs(x) < 1.
-        m_model = np.abs(x_model) <1.
-
-        phase_x_model = np.linspace(-1., 1., 1000)
-        phase_flux_model= predict_lc(phase_x_model,0,per_try[0],rp_try[0],cosi_try[0],a_try[0], u1, u2, cad)
-
-
-        t0_diff = ((t0 - t0_try[0] + 0.5*per_try[0]) % per_try[0]) -( 0.5*per_try[0])
-
-        ax1[1].scatter(x[m], flux[m]/np.nanmedian(flux), color = 'k', s = 3, zorder = 10, alpha = 0.75)
-        ax1[1].plot(phase_x_model, phase_flux_model, color = 'r',lw = 2, alpha = 0.6, zorder = 40)
-        ax1[1].fill_between(x_model[m_model], u_lim_model_flux[m_model], dwn_lim_model_flux[m_model], color='r', alpha=0.25, zorder = 20)
-
-#                 axes[1].plot(x_model[m_model], med_model_flux[m_model],      color = 'r',lw = 2, alpha = 0.8, zorder = 40)
-#                 axes[1].scatter(x_model[m_model],  u_lim_model_flux[m_model], color = 'purple', alpha=0.5, s=3)
-#                 axes[1].scatter(x_model[m_model], dwn_lim_model_flux[m_model], color = 'brown', alpha=0.5, s = 3)
-
-#                 ymi, yma= axes[1].get_ylim()
-
-        ax1[1].vlines(0, ymi, yma, alpha = 0.6, zorder=0, lw = 1.5, color = 'orange')
-        ax1[1].vlines(t0_diff, ymi, yma, alpha = 0.6, zorder=0, lw = 1.5, color = 'green')
-        ax1[1].set_xlim(-0.75, 0.75)
-#             plt.show()
-#             plt.close()
-#             ax_new = plt.subplots(gs1).reshape(1,6)[0]
-
-        try:
-            tdur = dur
-        except NameError:
-            tdur = (per_try[0]*24.)/(a_try[0]*np.pi)
-        print('transit duration after fitting (hours): ', tdur)
-        ax1[2].scatter(time[abs(time -  t0_try[0])<(tdur+1/3)], flux[abs(time -  t0_try[0])<(tdur+1/3)]/np.nanmedian(flux), color = 'k', s = 3, zorder = 10, alpha= 0.75)
-        xmin, xmax = ax1[2].get_xlim()
-        ax1[2].plot(model_time[abs(model_time -  t0_try[0])<(tdur+1/3)] , med_model_flux[abs(model_time -  t0_try[0])<(tdur+1/3)], color = 'r', lw = 0.8, alpha = 0.6, zorder = 40)
-        ax1[2].vlines(t0_try[0], ymi, yma, alpha = 0.5, zorder=0, lw = 2.5, color = 'orange')
-        ax1[2].vlines(t0,     ymi, yma, alpha = 0.5, zorder=0, lw = 1.5, color = 'green')
-        ax1[2].vlines([t0_try[0]+tdur/2, t0_try[0] - tdur/2],     ymi, yma, alpha = 0.5, zorder=0, lw = 2, color = 'dodgerblue')
-        ax1[2].set_xlim(xmin, xmax)
-        
-        
-
-        for iii in range(ndim):
-            param = ini_names[iii]
-            ax_new[iii].plot(list(range(len(chain[:,:,iii]))), chain[:,:,iii])
-
-            ax_new[iii].set_ylabel(param)
-
-
-        
-        fig1 = corner.corner(samples, labels = ini_names)
-        
-        pdf.savefig(fig0)
-        pdf.savefig(fig1)
-
-        plt.show()
-
-#     if verbose: 
-        # tau = sampler.get_autocorr_time()
-        # print(tau)
-        # burnin = int(2 * np.nanmax(tau))
-        # thin = int(0.5 * np.nanmin(tau))
-        # log_prob_samples = sampler.get_log_prob(discard=burnin, flat=True, thin=thin)
-        # log_prior_samples = sampler.get_blobs(discard=burnin, flat=True, thin=thin)
-        
-        # print("burn-in: {0}".format(burnin))
-        # print("thin: {0}".format(thin))
-        # print("flat chain shape: {0}".format(samples.shape))
-        # print("flat log prob shape: {0}".format(log_prob_samples.shape))
-        # print("flat log prior shape: {0}".format(log_prior_samples.shape))
-
-        # txt = "burn-in: {0}".format(burnin)+"\nthin: {0}".format(thin) +"\nflat chain shape: {0}".format(samples.shape)+"\nflat log prob shape: {0}".format(log_prob_samples.shape)+"\nflat log prior shape: {0}".format(log_prior_samples.shape)
-
-        # plt.text(0.01, 0.95, txt, transform=plt.gca().transAxes,   horizontalalignment='left', verticalalignment='top')
-        
-        # plt.savefig("./corner_plots/"+target[:-5]+'_corner_plot')
-#         samples = sampler.get_chain()
-        # for param in range(len(ini_names)):
-        #     new_fig, ax = plt.subplots(1, figsize=(12, 12))
-        #     ax.plot(list(range(len(chain[:,:,param]))), chain[:,:,param])
-        #     ymin, ymax = ax.get_ylim()
-        #     delta_y = ymax-ymin
-        #     # delta_chain = max(chain[:,:,param])-min(chain[:,:,param])
-        #     ax.vlines([100, 500, 1000, 2000, 3000], ymin-0.1*delta_y, ymax+0.1*delta_y)
-        #     # ax.title(ini_names[param])
-        #     ax.set_ylim(ymin-0.07*delta_y, ymax+0.07*delta_y)
-        #     plt.savefig('./corner_plots/'+data_file.split('/')[-2][:-5]+'_'+ini_names[param]+'_converging')
-    
-#     samples = sampler.get_chain(discard=BCHAIN)#, flat=True, thin=thin)
-
-    report = list(map(lambda v: (v[1], v[2]-v[1], v[1]-v[0]), zip(*np.percentile(samples, [16, 50, 84],axis=0))))
-
-    t0 = report[0][0]
-    u1, u2 = ab
-
-    if type_fn == 'Single':
-        
-        rp = report[1][0]
-        cosi = report[2][0]
-        a = report[3][0]
-        norm = report[4][0]
-        v=np.percentile(np.arccos(samples[:,2])*180/np.pi, [50, 16, 84])
-
-    elif type_fn == 'Periodic':
-        per = report[1][0]
-        rp = report[2][0]
-        cosi = report[3][0]
-        a = report[4][0]
-        norm = report[5][0]
-
-        v=np.percentile(np.arccos(samples[:,3])*180/np.pi, [50, 16, 84])
-        
-    i = (v[1], v[2]-v[1], np.abs(v[1]-v[0])) 
-    i = i[0]
-
-    b = np.abs(a*cosi)
-    depth = rp**2.
-    T0 = (per*24.)/(a*np.pi)
-    tau = rp*T0/np.sqrt(1.-(b**2.))
-    dur = np.sqrt(1.-(b**2.))*T0+tau 
-    win = dur*2
-#     print('t0', t0, 'dur', dur)
-    if type_fn == 'Periodic':
-        intran = np.where(transit_mask(time, per, dur/24, t0))[0]
-#         print('intran', len(np.where(intran)[0]))
-    elif type_fn == 'Single':  
-        intran = np.abs(time-t0)<(dur/2./24.)
-    outran =np.abs(time-t0)>=(dur/24.)
-    
-    uq = np.full(len(flux),np.std(flux[outran]))
-    sigs  = np.mean(uq[intran])
-    
-    print('len intran', len(intran), np.sqrt(len(intran)), 'depth', depth, 'sigs', sigs)
-    Q = np.sqrt(len(intran))*depth/sigs
-#     Q = np.sqrt(np.sum((1.-flux[intran])/uq[intran]))
-    result = [report[0][0],rp,per,cosi,i, a,u1,u2,norm,b,depth,dur,win,tau,Q]
-    if verbose: 
-        result_name = ['t0','rp','per','cosi','i', 'a','u1','u2','norm','b','depth','dur','win','tau','Q']
-        for iii in range(len(result_name)):
-            print(result_name[iii],result[iii])
-    if (not finished) and (step>=max_n) and (not always_keep):
-        print('NOT GOING TO KEEP THIS ONE')
-        return np.full(len([t0, per, depth, dur, rp, cosi, a, b, u1, u2, norm, win, tau, Q]), np.nan)
-
-
-    return [t0, per, depth, dur, rp, cosi, a, b, u1, u2, norm, win, tau, Q]
-
-
-
-def run_mcmc_code_for_tdur_and_depth(time, flux, unc, t0, period, ab, verbose = False, dur = 0):
-
-    period_unc = 0.01
-    if period == np.inf:
-        period = 100.
-        period_unc = 1.
-        
-    
-    ini_names = ['t0','per','rp','cosi','a','u1','u2','norm']
-    ini  = np.array([t0,period,0.01,0.,period,.3,.3,1.0],dtype=float)
-    ndim = len(ini)
-    err  = np.array([0.01,period_unc,0.01, 0.001, 0.1, 0.01, 0.01, 0.1])
-    pos  = [ini+5e-3*err*np.random.randn(ndim) for rrr in range(NUM_WALKERS)]
-
-    ff=flux
-    uu=unc
-    tt=time
-    PP=period
-    cad= np.min(np.diff(time))
-    u1, u2 = ab
-    global PARAMS
-    
-    if dur == 0:
-
-        PARAMS = [flux,unc,time,cad,t0, u1, u2]
-
-    else:
-        indxes = np.where(np.abs(time-t0)<(5*dur/24.))
-        use_flux = np.array(flux)[indxes]
-        use_unc  = np.array(unc)[indxes]
-        use_time = np.array(time)[indxes]
-        PARAMS   = [use_flux,use_unc,use_time,cad,t0, u1, u2]
-
-    with Pool(8) as pool:
-        sampler = emcee.EnsembleSampler(NUM_WALKERS,ndim,lnprob_MCMC_global,pool=pool)
-
-        sampler.run_mcmc(pos,NCHAIN,progress=True)
-
-    del globals()['PARAMS']
-    samples = sampler.chain[:, BCHAIN:, :].reshape((-1,ndim))
-    
-    if verbose: 
-        fig = corner.corner(samples, labels = ini_names)
-        plt.show()
-
-    report = list(map(lambda v: (v[1], v[2]-v[1], v[1]-v[0]), zip(*np.percentile(samples, [16, 50, 84],axis=0))))
-#     print('making corner plot')
-#     fig = corner.corner(samples, labels=ini_names)
-#     plt.show()
-#     print('done with corner plot')
-    t0 = report[0][0]
-    per = report[1][0]
-    rp = report[2][0]
-    cosi = report[3][0]
-    a = report[4][0]
-    b = np.abs(a*cosi)
-    depth = rp**2.
-    T0 = (per*24.)/(a*np.pi)
-    tau = rp*T0/np.sqrt(1.-(b**2.))
-    dur = np.sqrt(1.-(b**2.))*T0+tau
-    
-
-    if verbose: 
-        result_name = ['t0','rp','per','cosi','i', 'a','u1','u2','norm','b','depth','dur','win','tau','Q']
-#         for iii in range(len(report)):
-#             print(result_name[iii],report[iii])
-    return dur, depth, t0, per # [report[0], per, depth, dur, rp, cosi, a, b, u1, u2, norm, win, tau, Q]
-
-
 
 # In[56]:
 def extract_summary_dataframe(trace, hdi_prob=0.68):
@@ -3427,53 +1952,11 @@ def extract_summary_dataframe(trace, hdi_prob=0.68):
     return custom_summary_df
 
 
-# def sample_until_converged(model, max_attempts=3, rhat_threshold=1.2):
-#     for attempt in range(1, max_attempts + 1):
-#         print(f"Sampling attempt {attempt}...")
-        
-#         if attempt == 1:
-#             trace = pm.sample(draws=2000, tune=1000, chains=4, target_accept=0.9)
-#         else:
-#             trace = pm.sample(draws=2000*attempt, tune=1000*attempt, chains=4, target_accept=0.95)
-        
-#         summary = az.summary(trace)
-#         if (summary['r_hat'] < rhat_threshold).all():
-#             print(f"Converged on attempt {attempt}")
-#             return trace
-        
-#         print(f"Attempt {attempt} failed to converge. Retrying...")
-
-#     raise RuntimeError("Model did not converge after multiple attempts.")
-
-
-# def sample_until_converged(model, max_attempts=3, rhat_threshold=1.2):
-#     # Separate variables dynamically
-#     transit_vars = [var for var in model.free_RVs if var.name not in ['unc']]  # exclude unc since it's fixed
-#     # If you want to split by name pattern:
-#     # transit_vars = [var for var in model.free_RVs if var.name.lower() in ['t0','per','rp_rs','a_rs','cosi','u1','u2','norm']]
-    
-#     # Use Metropolis for all free RVs (since BatmanOp kills gradients)
-#     step = pm.Metropolis(vars=transit_vars)
-    
-#     for attempt in range(1, max_attempts + 1):
-#         print(f"Sampling attempt {attempt}...")
-#         trace = pm.sample(step=step, draws=2000*attempt, tune=1000*attempt, chains=4, target_accept=0.9)
-        
-#         summary = az.summary(trace)
-#         if (summary['r_hat'] < rhat_threshold).all():
-#             print(f"Converged on attempt {attempt}")
-#             return trace
-        
-#         print(f"Attempt {attempt} failed to converge. Retrying...")
-    
-#     raise RuntimeError("Model did not converge after multiple attempts.")
-    
-
-
-
-
-def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=8,cores=None, mp_context="spawn"):
+def sample_until_converged(model, max_attempts=2, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
+    
+    cores = min(chains, os.cpu_count() or 1) if cores is None else cores
+
     free_vars = model.free_RVs
     if not free_vars:
         raise ValueError("No free random variables found for sampling.")
@@ -3485,7 +1968,7 @@ def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=8,c
 
     for attempt in range(1, max_attempts + 1):
         print(f"Sampling attempt {attempt}...")
-        trace = pm.sample(step=step, draws=30000*attempt, tune=12000*attempt, chains=chains, cores = cores, 
+        trace = pm.sample(step=step, draws=5000*attempt, tune=2000*attempt, chains=chains, cores = cores, 
             # use a safe, explicit multiprocessing context
             mp_ctx=mp.get_context(mp_context),
             # avoid identical RNG streams across chains
@@ -3503,7 +1986,7 @@ def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=8,c
     raise RuntimeError("Model did not converge after multiple attempts.")
 
 
-def _min_relative_ess(idata, total_draws):
+def min_relative_ess(idata, total_draws):
     """
     Minimum relative ESS across all posterior variables.
     ArviZ versions differ on `relative=` availability, so handle both.
@@ -3515,6 +1998,9 @@ def _min_relative_ess(idata, total_draws):
         ess_abs = az.ess(idata, method="bulk")
         return float(ess_abs.to_array().min()) / float(total_draws)
 
+
+
+
 def sample_until_converged_smc(
     model,
     ess_ratio_target=0.70,     # target fraction of draws considered "effective"
@@ -3522,224 +2008,71 @@ def sample_until_converged_smc(
     base_draws=2000,           # starting population per chain
     chains=4,
     cores=None,
-    mp_context="forkserver",   # safer in Jupyter/conda on Linux
-    random_seed=None,          # list[int] or int
-    var_names=None,            # names to summarize/monitor (optional)
+    random_seed=None,          # int or list[int]; if None, will use a simple one-liner
+    var_names=None,            # optional quick-look names to summarize
     progressbar=True,
 ):
     """
     Run SMC repeatedly, increasing draws until min relative ESS meets target.
-    Returns (idata, info).
+    Returns (idata, attempt).
     """
-    cores = cores or chains
-    seed = random_seed if random_seed is not None else list(range(chains))
-    best = None
+    # Cores: one process per chain, capped at available CPUs
+    cores = min(chains, os.cpu_count() or 1) if cores is None else cores
+
+    # Seeds: keep it simple and predictable
+    if random_seed is None:
+        # One-liner Mallory suggested
+        seeds = list(2026 + np.array(range(chains)))
+    elif isinstance(random_seed, int):
+        # Same base int per chain, still simple and reproducible
+        seeds = [int(random_seed)] * chains
+    else:
+        seeds = list(random_seed)  # assume list[int]
+        if len(seeds) != chains:
+            raise ValueError(f"random_seed list length {len(seeds)} != chains {chains}")
 
     with model:
+        # Names of free RVs once
+
         for attempt in range(1, max_attempts + 1):
             draws = int(base_draws * attempt)
-            print(f"[SMC attempt {attempt}] draws={draws}, chains={chains}")
+            print(f"[SMC attempt {attempt}] draws={draws}, chains={chains}, cores={cores}")
 
             idata = pm.sample_smc(
                 draws=draws,
                 chains=chains,
                 cores=cores,
-                random_seed=seed,
+                random_seed=seeds,              # your per-chain seeds
+                threshold=ess_ratio_target,     # ESS fraction for resampling
                 return_inferencedata=True,
                 progressbar=progressbar,
+                compute_convergence_checks=False,
             )
 
             total_draws = draws * chains
-            min_ratio = _min_relative_ess(idata, total_draws)
+
+            # 4) Your ESS metric (uses your existing function)
+            min_ratio = min_relative_ess(idata, total_draws)
             print(f"  min relative ESS ≈ {min_ratio:.3f}")
 
+            # Optional quick-look summaries
             if var_names:
                 try:
                     print(az.summary(idata, var_names=var_names))
                 except Exception:
                     pass
-
-            info = {
-                "attempt": attempt,
-                "draws_per_chain": draws,
-                "chains": chains,
-                "min_relative_ess": min_ratio,
-                "target_relative_ess": ess_ratio_target,
-            }
-            best = (idata, info)
-            
-            print(az.summary(idata, var_names=["Per", "rp_rs", "a_rs", "cosi", "t0"]))
-
+            try:
+                print(az.summary(idata, var_names=["Per", "rp_rs", "a_rs", "b", "t0"]))
+            except Exception:
+                pass
 
             if min_ratio >= ess_ratio_target:
                 print(f"Converged by ESS on attempt {attempt}")
-#                 return idata, info
                 return idata, attempt
 
-    print("Returning best attempt; target ESS not met")
-#     return best
+    print("Returning last attempt; target ESS not met")
     return idata, attempt
 
-# def predict_lc_pymc(time_lc,t0,P,rp_rs,a,inc,e,omega,u1,u2,cad):
-#     oversample = 4
-#     params = batman.TransitParams()
-#     params.t0  = t0
-#     params.per = P
-#     params.rp  = rp_rs
-#     params.a   = a
-#     params.inc = inc
-#     params.ecc = e
-#     params.w = omega*180./np.pi
-#     params.u = [u1,u2]
-#     params.limb_dark = "quadratic"
-        
-#     cad = pt.switch(cad > 0, cad, 30.)
-    
-#     cad_val = cad if isinstance(cad, float) else 30.  # fallback if needed
-#     cad_val = cad_val / 24. / 60.
-
-#     m = batman.TransitModel(params, time_lc ,supersample_factor = oversample, exp_time = cad/24./60.)
-
-#     flux_theo = m.light_curve(params)
-
-#     return flux_theo
-
-# def predict_lc_wrapper(pars):
-#     time_lc, cad, t0, P, rp_rs, inc, a_rs, u1, u2 = pars
-#     e = 0.
-#     omega = 90.
-     
-#     return predict_lc_pymc(time_lc, t0, P, rp_rs, a_rs, inc, e, omega, u1,u2, cad)
-
-
-# def pymc_new_general_function(time, flux, unc, t0, other_pars, type_fn, verbose = True, keep_ld_fixed = True, phase_fold = True):
-
-#     mask = np.logical_or(np.logical_or(np.isnan(flux),  np.isnan(time)),  np.isnan(unc))
-#     time = time[~mask]
-#     unc  = unc[~mask]
-#     flux = flux[~mask]
-
-#     cad = np.min(np.diff(time))*60.*24.
-    
-#     if type_fn == 'Single':
-#         dur, ab, depth = other_pars
-#         per = np.max(time)-np.min(time)
-#         per_unc = 10
-        
-#         indxes = np.where(np.abs(time-t0)<(1.+dur/24.))
-        
-#         use_time = np.array(time)[indxes]
-#         use_flux = np.array(flux)[indxes]
-#         use_unc  = np.array(unc)[indxes]
-#     elif type_fn == 'Periodic':
-#         per, ab, depth = other_pars
-#         per_unc = 0.1
-#         use_time = np.array(time)
-#         use_flux = np.array(flux)
-#         use_unc  = np.array(unc)
-        
-#     u1, u2 = ab
-        
-#     with pm.Model() as model:
-
-
-#         time_lc = pm.Data("time_lc", use_time, mutable = False)
-#         cad = pm.Data("cad", cad, mutable = False)
-
-
-#         t0    = pm.TruncatedNormal("t0", mu=t0, sigma=0.01, lower=t0-0.25, upper=t0+0.25)
-#         Per   = pm.Normal("Per", mu=per, sigma=per_unc)
-#         rp_rs = pm.TruncatedNormal("rp_rs", mu=pt.sqrt(depth), sigma=0.01, lower=0, upper=1)
-#         a_rs  = pm.TruncatedNormal("a_rs", mu=per, sigma=0.1, lower=1)
-#         cosi  = pm.TruncatedNormal("cosi", mu=0., sigma=0.01, lower=0, upper=1)
-#         norm  = pm.Normal("norm", mu=1.0, sigma=0.01)
-
-#         inc = pm.Deterministic('inclination', pt.arccos(cosi)*180./np.pi)
-
-#         if keep_ld_fixed:
-#             u1 = pm.Data("u1", u1, mutable=False)
-#             u2 = pm.Data("u2", u2, mutable=False)
-#         else:
-#             u1 = pm.TruncatedNormal("u1", mu=u1, sigma=0.01, lower=0, upper=1)
-#             u2 = pm.TruncatedNormal("u2", mu=u2, sigma=0.01, lower=0, upper=1)
-            
-
-        
-#         #not phase folded
-#         if phase_fold:
-#             print('phase fold ingredients: time: ', time_lc, '\nt0: ', t0, '\nPer: ', Per)
-#             folded_phase = ((time_lc - t0 + 0.5*Per) % Per) -( 0.5*Per)
-#             print('folded phase', folded_phase)
-#             sort_indx    = pt.argsort(folded_phase)
-#             print('sorted phase index', sort_indx)
-
-#             phase = folded_phase[sort_indx]
-#             print('sorted phase', phase)
-#             p_cad = pt.median(phase[1:] - phase[:-1]) * 60 * 24
-            
-#             p_pars = [phase+t0, p_cad, t0, Per, rp_rs, inc, a_rs, u1, u2]
-#             p_flux_model = predict_lc_wrapper(p_pars)
-        
-#             pm.Normal("obs", mu=p_flux_model * norm, sigma=use_unc, observed=use_flux[sort_indx])
-
-
-        
-#         #phase folded
-#         else:
-#             pars = [time_lc, cad, t0, Per, rp_rs, inc, a_rs, u1, u2]
-
-#             flux_model = predict_lc_wrapper(pars)
-
-#             pm.Normal("obs", mu=flux_model * norm, sigma=use_unc, observed=use+flux)
-            
-            
-            
-#         #Defining all non-used deterministic variables to be saved later
-#         b      = pm.Deterministic('b', a_rs*cosi) #
-#         depth  = pm.Deterministic('depth', rp_rs**2) #
-#         T_dur0 = (per*24.)/(a*np.pi)
-#         tau    = pm.Deterministic('tau', rp_rs*T_dur0/pt.sqrt(1.-(b**2.))) #
-#         dur    = pm.Deterministic('dur', pt.sqrt(1.-(b**2.))*T0+tau ) #
-#         win    = dur*2 
-#         if type_fn == 'Periodic':
-#             intran = np.where(transit_mask(time, per, dur/24, t0))[0]
-#     #         print('intran', len(np.where(intran)[0]))
-#         elif type_fn == 'Single':  
-#             intran = np.abs(time_lc-t0)<(dur/2./24.)
-#         outran = np.abs(time_lc-t0)>=(dur/24.)
-#         uq     = np.full(len(flux),np.std(flux[outran]))
-#         sigs   = np.mean(uq[intran])
-                        
-#         SNR    = pm.Deterministic('SNR', pt.sqrt(len(intran))*depth/sigs ) #
-# #         SNR    = pm.Deterministic('SNR', pt.sqrt(np.sum((1.-use_flux[intran])/use_unc[intran]))) #
-
-                    
-
-#     with model:
-#         try:
-#             trace = sample_until_converged(model)
-#             summary = extract_summary_dataframe(trace)
-
-#         except RuntimeError as error:
-#             return pd.DataFrame(np.nan, index=summary.index, columns=summary.columns)
-            
-
-#     # Summary statistics
-#     print(summary)
-
-#     if verbose:
-
-#         # Trace plots
-#         az.plot_trace(trace)
-
-#         # Posterior plots
-#         az.plot_posterior(trace)
-
-#         # Save results
-# #         az.to_netcdf(trace, "trace_output.nc")
-#         plt.show()
-    
-#     return summary
                                 
 
 
@@ -3774,23 +2107,30 @@ class BatmanOp(Op):
         return [pt.zeros(inp.shape, dtype=pt_config.floatX) for inp in inputs]
     
 def set_up_variables_for_pymc_fit(time, flux, unc, t0, other_pars, type_fn):
+    """
+    Returns:
+        use_time, use_flux, use_unc, per, u1, u2, depth, cad
+
+    cad is a robust effective cadence in MINUTES.
+    """
     mask = np.logical_or(np.logical_or(np.isnan(flux),  np.isnan(time)),  np.isnan(unc))
     time = time[~mask]
     unc  = unc[~mask]
     flux = flux[~mask]
 
-    cad = np.min(np.diff(time))*60.*24.
-    
+    cad = np.nanpercentile(np.clip(np.diff(np.unique(time))*60.*24., 200/60, 30), 95) #minutes
+
     if type_fn == 'Single':
         dur, ab, depth = other_pars
+        k = np.sqrt(depth)
         per1 = np.max(time)-np.min(time)
-        per2 = dur*10*np.pi/24
-        per = np.min([per1, per2])
-        print('time difference', np.max(time)-np.min(time))
+        per2 = ((3*np.pi/con.G/con.rho_star)** 0.5 ) * (dur/np.pi/(1+k)) ** 1.5
+        per = np.max([per1, per2])
+        print('time difference', np.max(time)-np.min(time), 'checking duration units (must be < 0.5 for days, <12 for hours)', dur)
         if per<10:
             per = 27.8
         
-        indxes = np.where(np.abs(time-t0)<(1.+dur/24.))
+        indxes = np.where(np.abs(time-t0)<(1.+dur))
         
         use_time = np.array(time)[indxes]
         use_flux = np.array(flux)[indxes]
@@ -3801,9 +2141,14 @@ def set_up_variables_for_pymc_fit(time, flux, unc, t0, other_pars, type_fn):
         use_flux = np.array(flux)
         use_unc  = np.array(unc)
         
-    u1, u2 = ab
+        print(per, type(per))
         
-    return use_time, use_flux, use_unc, per, u1, u2, depth, cad
+        a_smaj_guess = float((con.G * con.rho_star * (per ** 2) / 3 / np.pi) ** (1/3))
+        dur =  min([0.5/3, (float(per) / float(a_smaj_guess * np.pi))])  # days
+
+    u1, u2 = ab
+
+    return use_time, use_flux, use_unc, float(per), u1, u2, float(depth), 1.5*float(dur), cad
 
 
 def median_pytensor(x):
@@ -3816,179 +2161,211 @@ def median_pytensor(x):
         sorted_x[mid]
     )
 
-    
-def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn, verbose = True, keep_ld_fixed = True, phase_fold = False):
 
-    time, flux, unc, Per, U1, U2, Depth, cad = set_up_variables_for_pymc_fit(time, flux, unc, T0, other_pars, type_fn)
+
+def make_windows_from_time_stamps(t, gap_threshold=0.5):
+    """
+    Convert sorted time stamps (days) into contiguous [start, end] windows.
+    gap_threshold is the minimum gap that splits windows (days).
+    Pick a value larger than cadence and smaller than any real gap.
+    """
+    t = np.asarray(t)
+    t = t[np.isfinite(t)]
+    t = np.sort(t)
+    if t.size == 0:
+        return np.empty((0, 2))
+    gaps = np.diff(t)
+    breaks = np.where(gaps > gap_threshold)[0]
+    starts = np.concatenate(([0], breaks + 1))
+    ends   = np.concatenate((breaks, [t.size - 1]))
+    return np.column_stack((t[starts], t[ends]))
+
+
+
+
+
+def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn,
+                              verbose=True, keep_ld_fixed=True):
+
+    # Unpack and precompute using your existing helper
+    time, flux, unc, Per, u1, u2, Depth, pTdur, cad = set_up_variables_for_pymc_fit(
+        time, flux, unc, T0, other_pars, type_fn
+    )
+    
     batman_op = BatmanOp()
 
-    
-    
-    G = 2941.18330364 #R_s^3 M_s^-1 day^−2
-    
+    # --- Tightening bounds and simple physics helpers (outside the model) ---
+
+    # Build contiguous observation windows from actual timestamps
+    windows = make_windows_from_time_stamps(np.array(time), gap_threshold=0.5)
+
+    # Count how many integer k place transit centers inside these windows
+    nobs_est = 0
+    for s, e in windows:
+        k_low  = np.ceil((s - T0) / Per)
+        k_high = np.floor((e - T0) / Per)
+        nobs_est += int(max(0, k_high - k_low + 1))
+
+    ecc = 0.
+
     with pm.Model() as model:
 
-        t0    = pm.TruncatedNormal("t0", mu=T0, sigma=0.01, lower=T0-0.25, upper=T0+0.25)
+        # Use a duration-sized box for t0 in both modes
+        t0 = pm.Uniform("t0", lower=T0 - pTdur, upper=T0 + pTdur)
 
         if type_fn == 'Single':
             print('single')
-            per   = pm.TruncatedNormal("Per", mu=Per, sigma=10., lower= 0)
-            ecc   = pm.TruncatedNormal("Eccen", mu=0., sigma=0.25, lower = 0, upper = 1)
-            sigma_a = 5.
-            a_smaj = 215/10
+            # Keep your Single logic, but give Per a modest bound window
+#             per   = pm.Uniform( "Per",  lower=max(0.25, Per * 0.5), upper=Per * 2.5)
+#             ecc   = pm.TruncatedNormal("Eccen", mu=0., sigma=0.25, lower=0, upper=1)
+            # a/R*: tie to sampled per
+            a_rs_from_Per_init = float(((con.G * con.rho_star * (Per ** 2)) / (3.0 * np.pi)) ** (1.0 / 3.0))
+#             a_rs_mu = pm.Deterministic("a_rs_mu", (con.G * con.rho_star * (per ** 2) / 3 /np.pi) ** (1/3))
+#             a_rs    = pm.TruncatedNormal("a_rs", mu=a_rs_mu, sigma=5.0, lower=1.0)
 
+            a_rs = pm.TruncatedNormal("a_rs", mu=aRs_from_Per_init, sigma=5.0, lower=1.0,
+                              initval=aRs_from_Per_init)
+
+            per = pm.Deterministic("Per", pt.sqrt((3.0 * np.pi) / (con.G * con.rho_star)) * a_rs ** 1.5)
+
+            fold_this = False
+            
         elif type_fn == 'Periodic':
-            print('periodic, period =', Per, 'days')
+            print('periodic, period =', Per, 'days, transits observed = ', nobs_est)
 
-            per   = pm.TruncatedNormal("Per", mu=Per, sigma=0.1, lower= 0.25)
-            ecc   = 0
-            sigma_a = 1.
-#             a_smaj = Per
-            a_smaj = ((Per/365)**(2/3))*215/2
-            print('a_smaj_guess', a_smaj)
-#             norm  = pm.Normal("norm", mu=1.0, sigma=0.01)
+            # Period bounds:
+            #  - many transits: very tight uniform (±1%)
+            #  - otherwise: TN with ±20% support and sigma ~ 5% of Per
+
+            if nobs_est > 10:
+                P_lower = max(0.25, Per * 0.99)
+                P_upper = Per * 1.01
+                P_sigma = None
+                fold_this = True
+                # MANY TRANSITS MODE (DECOUPLED)
+                # 1. Keep tight uniform for ephemeris
+                per = pm.Uniform("Per", lower=P_lower, upper=P_upper)
+
+                # 2. DO NOT tie a_rs to Per via Kepler’s law
+                #    Instead give an uninformative wide prior
+                a_rs = pm.Uniform("a_rs", lower=1.0, upper=300.0)
+
+            else:
+                P_lower = max(0.25, Per * 0.80)
+                P_upper = Per * 1.20
+                P_sigma = max(0.1, 0.05 * Per)
+
+                # LOW/FEW TRANSITS MODE (original behavior)
+                per = pm.TruncatedNormal("Per", mu=Per, sigma=P_sigma, lower=P_lower, upper=P_upper)
+                # original line
+                
+                print('con rho_star', con.rho_star, type(con.rho_star))
+                fold_this = False
+                a_rs_mu = pm.Deterministic("a_rs_mu", (con.G * con.rho_star * (per ** 2) / 3 /np.pi) ** (1/3))
+                a_rs = pm.TruncatedNormal("a_rs", mu=a_rs_mu, sigma=3., lower=1.0)
+       
+        # Depth and geometry
+        rp_rs = pm.TruncatedNormal("rp_rs", mu=pt.sqrt(Depth),
+                                   sigma=pt.maximum(0.02, 0.5 * pt.sqrt(Depth)),
+                                   lower=0, upper=1)
+        b     = pm.TruncatedNormal('b', mu=0, sigma=0.01, lower=0, upper=1)
+
+        depth  = pm.Deterministic('depth', rp_rs**2)
+
+        # 1) Inclination: clip to arccos domain
+        cosi = pm.Deterministic("cosi", pt.clip(b / a_rs, -1.0 + 1e-12, 1.0 - 1e-12))
+        inc  = pm.Deterministic("inclination", pt.arccos(cosi) * 180.0 / np.pi)
+
+        # 2) Duration terms: guard tiny denominators / underflow
+        eps  = 1e-12
+        root = pt.sqrt(pt.clip(1.0 - b**2, 1e-12, 1.0))
+        T_dur0 = per / ((a_rs + eps) * np.pi)
+        tau    = pm.Deterministic('tau', rp_rs * T_dur0 / root)
+        dur    = pm.Deterministic('dur', root * T_dur0 + tau)
+        win    = pm.Deterministic('win', dur * 2.)
 
 
-        rp_rs = pm.TruncatedNormal("rp_rs", mu=pt.sqrt(Depth), sigma=0.1, lower=0, upper=1)
-        a_rs  = pm.TruncatedNormal("a_rs", mu=a_smaj, sigma=sigma_a, lower=1)
-        b     = pm.TruncatedNormal('b', mu=0, sigma=0.01, lower=0, upper = 1) #
 
-        cosi  = pm.Deterministic("cosi", b/a_rs)
-        inc = pm.Deterministic('inclination', pt.arccos(cosi)*180./np.pi)
-
-        if keep_ld_fixed:
-            u1 = U1
-            u2 = U2
-        else:
-            
-            u1 = pm.TruncatedNormal("u1", mu=U1, sigma=0.01, lower=0, upper=1)
-            u2 = pm.TruncatedNormal("u2", mu=U2, sigma=0.01, lower=0, upper=1)
-          
-            
-        cad = pt.switch(cad > 0., cad, 30.)
-
-            
-        #Defining all non-used deterministic variables to be saved later
-#         b      = pm.Deterministic('b', pt.abs(a_rs*cosi)) #
-        depth  = pm.Deterministic('depth', rp_rs**2) #
-        T_dur0 = (per*24.)/(a_rs*np.pi)
-        tau    = pm.Deterministic('tau', rp_rs*T_dur0/pt.sqrt(1.-(b**2.))) #
-        dur    = pm.Deterministic('dur', pt.sqrt(1.-(b**2.))*T_dur0 + tau ) #
-        win    = pm.Deterministic('win', dur*2 ) #
-        
-
-        # Masks (symbolic)
+        # Masks
         if type_fn == 'Periodic':
-            intran_mask = transit_mask_tensors(time, per, dur / 24., t0)  # must return PyTensor boolean
-            intran_idx = pt.nonzero(intran_mask)[0]
+            intran_mask = transit_mask_tensors(time, per, dur, t0)  # boolean PyTensor
         elif type_fn == 'Single':
-            intran_mask = pt.abs(time - t0) < (dur / 2. / 24.)
-            intran_idx = pt.nonzero(intran_mask)[0]
-            per_scaled = pm.Deterministic('scaled_P', pt.sqrt(3 * np.pi / G * a_rs**3)) #
-            
+            intran_mask = pt.abs(time - t0) < (dur / 2.)
+
         outran_mask = pt.invert(intran_mask)
 
-        # Compute uq and sigs symbolically
-
+        # Out-of-transit scatter estimate
         out_flux = flux * outran_mask  # zeros elsewhere
-        count = pt.maximum(pt.sum(outran_mask), 1)  # avoid zero
+        count = pt.maximum(pt.sum(outran_mask), 1)
         mean_out = pt.sum(out_flux) / count
         std_out = pt.sqrt(pt.sum(outran_mask * (flux - mean_out)**2) / count)
 
         N_tran = pt.sum(intran_mask)
         uq = pt.ones_like(flux) * std_out
-#         sigs = pt.mean(pt.where(intran_mask, uq, 0))
-        
+        sigs = pt.switch(N_tran > 0, pt.mean(pt.where(intran_mask, uq, 0)), 1e6)
 
-        sigs = pt.switch(N_tran > 0,pt.mean(pt.where(intran_mask, uq, 0)), 1e6) 
+        # SNR diagnostic
         print('N_intran', pm.draw(N_tran), 'depth', pm.draw(depth), 'sig', pm.draw(sigs))
-        # SNR
-
-
         SNR_val = pt.switch(pt.gt(N_tran, 0), pt.sqrt(N_tran) * depth / sigs, 0)
         SNR_clipped = pt.clip(SNR_val, 0, 1e4)
         SNR_final = pt.where(pt.eq(SNR_clipped, 1e4), 1, SNR_clipped)
-        
-        if not phase_fold:
+        if not fold_this:
             SNR = pm.Deterministic("SNR", SNR_final)
-        
-#         if type_fn =='Single':
-            
+
         norm = pm.Deterministic("norm", median_pytensor(out_flux))
-        #not phase folded
-        if phase_fold:
-            folded_phase = ((time - T0 + 0.5*Per) % Per) -( 0.5*Per)
-            sort_indx    = np.argsort(folded_phase)
-            phase = folded_phase[sort_indx]
-            p_cad = np.median(phase[1:] - phase[:-1]) * 60 * 24
+
+        # Likelihood
+        if fold_this:
+            folded_phase = ((time - T0 + 0.5 * Per) % Per) - (0.5 * Per)
             
-            p_flux_model = batman_op(phase+T0, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, p_cad)
-            intran_mask = transit_mask_tensors(phase+t0, per, dur / 24., t0)  # must return PyTensor boolean
-            outran_mask = pt.invert(intran_mask)
-            out_flux = flux * outran_mask  # zeros elsewhere
-            count = pt.maximum(pt.sum(outran_mask), 1)  # avoid zero
-            mean_out = pt.sum(out_flux) / count
+            sort_indx = np.argsort(folded_phase)
+            
+            phase = folded_phase[sort_indx]
+            use_index = np.abs(phase) < min([0.5, 5*pTdur])
+            
+            dt_minutes_min = np.nanpercentile(np.diff(np.unique(np.sort(time))), 5) * 24.0 * 60.0
+            p_cad = float(np.clip(dt_minutes_min, 0.2, 60.0))
+
+            p_flux_model = batman_op(phase[use_index] + T0, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, p_cad)
+
+            intran_mask = transit_mask_tensors(phase + t0, per, dur, t0)
             std_out = pt.sqrt(pt.sum(outran_mask * (flux - mean_out)**2) / count)
 
             N_tran = pt.sum(intran_mask)
             uq = pt.ones_like(flux) * std_out
-    #         sigs = pt.mean(pt.where(intran_mask, uq, 0))
-
-
-            sigs = pt.switch(N_tran > 0,pt.mean(pt.where(intran_mask, uq, 0)), 1e6) 
+            sigs = pt.switch(N_tran > 0, pt.mean(pt.where(intran_mask, uq, 0)), 1e6)
             print('N_intran', pm.draw(N_tran), 'depth', pm.draw(depth), 'sig', pm.draw(sigs))
-            # SNR
-
 
             SNR_val = pt.switch(pt.gt(N_tran, 0), pt.sqrt(N_tran) * depth / sigs, 0)
             SNR_clipped = pt.clip(SNR_val, 0, 1e4)
             SNR_final = pt.where(pt.eq(SNR_clipped, 1e4), 1, SNR_clipped)
-
             SNR = pm.Deterministic("SNR", SNR_final)
-            
-            
-            pm.Normal("obs", mu=p_flux_model * norm, sigma=unc, observed=flux[sort_indx])
 
-
-        
-        #phase folded
+            pm.Normal("obs", mu=p_flux_model* norm, sigma=unc[sort_indx][use_index], observed=flux[sort_indx][use_index])
         else:
-
-            flux_model = batman_op(time,t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
-
+            flux_model = batman_op(time, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
             pm.Normal("obs", mu=flux_model * norm, sigma=unc, observed=flux)
-            
-            
 
+    # Sampling (use your SMC wrapper; no custom start needed)
     with model:
         try:
-            trace, conv_attempt = sample_until_converged_smc(model)
-#             trace, conv_attempt = sample_until_converged(model)
+            trace, conv_attempt = sample_until_converged(model)
             summary = extract_summary_dataframe(trace)
-
         except RuntimeError as error:
-#             return pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat'])
-
-            return pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat']), False, np.nan
-            
-
-    # Summary statistics
-#     print(summary)
+            return (
+                pd.DataFrame(columns=['mean', 'median', 'sd', 'hdi_16%', 'hdi_84%', 'r_hat']),
+                False,
+                np.nan
+            )
 
     if verbose:
-
-        # Trace plots
         az.plot_trace(trace)
-
-        # Posterior plots
         az.plot_posterior(trace)
-
-        # Save results
-#         az.to_netcdf(trace, "trace_output.nc")
         plt.show()
+
     print('summary', summary)
-#     return summary
     return summary, True, conv_attempt
+
 
 def flatten_summary_blocks(F):
     """
@@ -4074,7 +2451,7 @@ def bin_data_with_diff_cadences_many_args(total_time, min_cad = 0, **params):
     
     new_time = []
     
-    indexes_split_unorganize = breaking_up_data(time, 2.)   
+    indexes_split_unorganize = breaking_up_data(time, 1.)   
     indexes_split = sorted(indexes_split_unorganize, key=lambda x: len(x), reverse=True)
     
     cadences = [min_cad]
@@ -4464,18 +2841,4 @@ def creating_first_DV_report_page(ticid, data_filename, planet_df, catalog_df, i
         plt.close('all')
         
 
-        
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
-
-
-
+       

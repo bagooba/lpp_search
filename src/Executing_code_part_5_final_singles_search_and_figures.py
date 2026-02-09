@@ -86,6 +86,9 @@ def main(target,save_things = True):
 
     # catalog_df = pd.read_csv(target+'/tic_star_parameters.csv')
     print('catalog df', catalog_df)
+    
+    con.rho_star = float(catalog_df['Mass']/(catalog_df['Rad']**3)* 3 /4/np.pi)
+    
     total_file_path = glob.glob(target+'/*TGLC*_total.csv')[0]
     intransit = []
     per_planet_df = []
@@ -101,7 +104,7 @@ def main(target,save_things = True):
 #         for per in per_planet_df['period']:
 #             intransit = np.full(len(time), False)
  
-    singles_planet_df, sparams_df = singles_search(ticid, total_file_path, intransit = intransit, catalog_df = catalog_df, confidence = 0.6, run_1 = False, data_file = target)   
+    singles_planet_df, sparams_df = singles_search(ticid, total_file_path, intransit = intransit, catalog_df = catalog_df, confidence = 0.55, run_1 = False, data_file = target)   
         
     singles_planet_df['Ptype'] = 'Single'
     
@@ -160,10 +163,10 @@ def main(target,save_things = True):
 #                 print('periodic planet fit', planet)
                 
 
-                print('pparams_df', pparams_df)
+                print('per_planet_df', per_planet_df)
         
-                if type(pparams_df.loc['Per', 'mean']<25) == np.bool_:
-                    keep = pparams_df.loc['Per', 'mean']<25
+                if type(per_planet_df.loc['Per', 'mean']<25) == np.bool_:
+                    keep = per_planet_df.loc['Per', 'mean']<25
                 else:
                     keep = list(pparams_df.loc['Per', 'mean']<25)[-1]
 

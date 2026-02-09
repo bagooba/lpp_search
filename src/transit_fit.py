@@ -12,7 +12,7 @@ This module provides a small class that:
 No algorithms are re-written here.
 """
 
-from __future__ import annotations
+# from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import numpy as np

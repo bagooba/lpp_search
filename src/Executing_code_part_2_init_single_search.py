@@ -113,7 +113,7 @@ def main(target):
 #     print('running first search!!!!')
     
     gc.collect()
-    singles_df = singles_search(ticid, total_file_path[0], intransit = [], catalog_df = catalog_df)   
+    singles_df = singles_search(ticid, total_file_path[0], intransit = [], catalog_df = catalog_df, confidence = 0.5)   
     if len(singles_df)>0:
         os.rename(target, target+'_check')
         print('keeping this ticid: ', ticid)
@@ -132,26 +132,22 @@ if __name__ == "__main__":
     import multiprocessing as mpl
     # from schwimmbad import JoblibPool
 
-#     try:
-#         file_factor = int(sys.argv[1])
-#     except ValueError:
+    try:
+        file_num = int(sys.argv[1])
+    except ValueError:
         
-#         sys.exit(1)
-    # file_num +=1000
+        sys.exit(1)
 
     time1 = tm.time()
     
-    target_files = sorted(glob.glob('../toi_data/target_*data'))
-
-    print('now running pools')
+    target_files = sorted(glob.glob('../new_toi_data/target_*data'))
+    file = target_files[file_num]
 #     print('factor: ', file_factor, ', running files_nums:', file_factor*8 , '-', min(len(target_files), (file_factor+1)*8))
 #     pool = mpl.Pool()
     
     
-    file_factor_FFF = len(target_files) % 8
     
-    for file in target_files:
-        main(file) 
+    main(file) 
 
 #         factor_files_max = min(len(target_files), (file_factor+1)*8)
 #         factor_files_min = file_factor*8

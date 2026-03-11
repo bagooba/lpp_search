@@ -13,8 +13,9 @@
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=0-55
+#SBATCH --array=0-54
 
+cd ../src
 module load miniconda3
 source activate /users/malharris/miniconda3/envs/envRunningInJupyter
 

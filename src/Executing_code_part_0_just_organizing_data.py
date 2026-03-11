@@ -169,7 +169,7 @@ if __name__ == "__main__":
     # file_num +=1000
 
     time1 = tm.time()
-    target_files = sorted(glob.glob('../toi_data/target_*'))
+    target_files = sorted(glob.glob('../new_toi_data/target_*'))
     print('num files', len(target_files))
     
     # for result in pool.imap(main, [file for file in files]):

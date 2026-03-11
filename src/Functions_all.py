@@ -23,6 +23,7 @@ import lightkurve      as lk
 import deep_transit    as dt
 import multiprocessing as mp
 # import mr_forecast as mr
+import scipy.stats as sst
 
 import matplotlib                      as mpl
 import matplotlib.pyplot               as plt
@@ -351,7 +352,7 @@ def T14(P, R_star, M_star, R_planet, b=0, i=90*units.deg): #will replace Tdur ab
 # In[42]:
 
 
-def remove_outliers(time, flux, sigma_lower=5.0, sigma_upper=2.5, **kwargs):
+def remove_outliers(time, flux, sigma_lower=6.0, sigma_upper=3., **kwargs):
     outlier_mask = sigma_clip(data=flux,
 #                               sigma=sigma,
                               sigma_lower=sigma_lower,
@@ -721,9 +722,9 @@ def breaking_up_data(time, break_val = 27., min_size = 0.5):
         r = np.arange(brk[i],brk[i+1], 1)
 
         if len(r)>1:
-            
-        
             if np.ptp(time[r])>min_size:
+#                 if min_size!= 0.5:
+#                     print(np.ptp(time[r]), ' > ', min_size, '?')
                 indexes.append(r)
     return indexes
 
@@ -781,6 +782,8 @@ def checking_BLS_periodicity(per, period_array, t0, t0_array):
     print('factors',np.round(factors, 5))
     factor_indxs = np.where(np.logical_or(np.abs(factors - np.rint(factors))<0.03, np.abs(1/factors - np.rint(1/np.array(factors)))<0.03))[0]
 
+    pop_per = np.nan
+
     keep_factor = 1
 #     if 1. in np.round(factors, 7):
 #         keep_factor = -1E5
@@ -791,7 +794,6 @@ def checking_BLS_periodicity(per, period_array, t0, t0_array):
 #     print('indexes of repeated periods', rep_indxs)
     new_period = per
     not1_indxs = np.where(np.rint(factors[factor_indxs])!=1.)
-
     if len(rep_indxs)>0:
         keep_factor = -1
         val = 0
@@ -800,7 +802,9 @@ def checking_BLS_periodicity(per, period_array, t0, t0_array):
             new_period = catching_periods_repeated_and_offset(new_period,t0, np.array(period_array), np.array(t0_array), rep_indxs)
             if len(new_period)>0:
                 new_period  = min(new_period)
-                keep_factor = 1
+                keep_factor = abs(per/new_period)
+                pop_per = per
+                
             elif new_period == per:
                 keep_factor = -1E5
                 
@@ -812,17 +816,18 @@ def checking_BLS_periodicity(per, period_array, t0, t0_array):
     elif len(not1_indxs[0])>0:
         
         factors_not1 = factors[not1_indxs]
-        factors_not1[factors_not1>1] = 1.
+#         factors_not1[factors_not1>1] = 1.
 
         factors_not1 = np.unique(factors_not1)
         
         keep_factor = max(1/factors_not1)
         
+        pop_per = float(set(np.array(period_array)[np.where(factors == 1/keep_factor)])[0])
         #note: the following line is assuming that generally the min period is the true period, and multiples are aliases. This allows us to run MCMC on fewer periods. However, if the true period is the longer one, we're in trouble
         new_period  = per
     
     print('final of periodicity check; period: ', new_period, ' keep factor', keep_factor)
-    return new_period, keep_factor
+    return new_period, keep_factor, pop_per
         
 
 def checking_aliases_repeated_periodic_planets(per_ary, t0_ary, q_ary):
@@ -1174,7 +1179,7 @@ def build_box_model(time, t0, duration, depth, period = -1):
 
 def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
                             verbose=True, plot=True, max_planets=10,
-                            min_SDE=10, min_delta_BIC=75, use_AIC=False,
+                            min_SNR=8, min_SDE = 10,
                             periods=None, T0=None, Tdur=None, depths=None, first=False):
     """
     Recursive multi-planet search using GERBLS pyFastBLS + run_double and BIC/AIC-based model selection.
@@ -1230,27 +1235,24 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     sorted_results = np.sort(results['power_final'])
 
     # Compute SDE
-    sde  = (results['power_final'][index] - np.median(results['power_final'])) / np.std(results['power_final'])
-    sde2 = (sorted_results[-1] - sorted_results[-2] ) / np.std(sorted_results[:-2])
+    mad = sst.median_abs_deviation(results['power_final'])
+    results['SNR'] =  results['power_final']/(mad/0.67)
+    
+    sde  = (results['power_final'][index] - np.mean(results['power_final'])) / np.std(results['power_final'])
+#     sde2 = (sorted_results[-1] - sorted_results[-2] ) / np.std(sorted_results[:-2])
 
 #     if verbose:
-    print(f"Candidate: P={period:.4f} d, SDE={sde:.2f}, SDE2={sde2:.2f}, min_SDE={min_SDE:.2f}")
+    print(f"Candidate: P={period:.4f} d, SDE={sde:.2f},min_SDE={min_SDE:.2f}, SNR = {results['SNR'][index]:.4f}, min_SNR = {min_SNR:.2f}")
+#     print(f"Candidate: P={period:.4f} d, SDE={sde:.2f}, SDE2={sde2:.2f}, min_SDE={min_SDE:.2f}")
 
     
-    if (sde < min_SDE) or (sde2 < 0.2):
-        print("Stopping: SDE below threshold.")
-        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
 
-    try:
-        stats = model.compute_stats(period, duration, t0)
-        print('number transit times in baseline:', len(stats["transit_times"][stats["per_transit_count"]>0]), ' \nnumber of point in each transit: ', stats["per_transit_count"][stats["per_transit_count"]>0], '\ntransit likelihood:', stats["per_transit_log_likelihood"][stats["per_transit_count"]>0])
+    mask = results['SNR'] > min_SNR
 
-    except ValueError as err:
-        print('getting error: ', err)
 
     if plot: # and np.ceil(results.duration[index]/np.nanmedian(np.diff(time)))>=3:
         plt.figure(figsize = (10, 6))
-        val_triangles = min(results.power_final)-np.std(results.power_final)
+        val_triangles = min(results.SNR)-np.std(results.SNR)
         ax = plt.gca()
         ax.scatter(period, val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
 
@@ -1258,10 +1260,10 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
         for n in range(2, 10):
             ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
             ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-        plt.ylabel(r'SDE')#, fontsize = 40)
+        plt.ylabel(r'SNR')#, fontsize = 40)
         plt.xlabel('Period (days)')#, fontsize = 40)
 
-        ax.plot(results.period, results.power_final, color = 'k', lw=0.65)
+        ax.plot(results.period, results.SNR, color = 'k', lw=0.65)
 
         plt.show()
         plt.close()
@@ -1291,6 +1293,19 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
             ax2.set_xlabel('Phase')#, color = 'k', fontsize = 40)
             ax2.set_ylabel('Relative Flux')#, color = 'k', fontsize = 40);
             plt.show()
+    if not mask.any() or sde<min_SDE:
+        if sde<min_SDE:
+            print("Stopping: SDE below threshold.")
+        if not mask.any():
+            print('Stopping: SNR below threshold.')
+        return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
+
+    try:
+        stats = model.compute_stats(period, duration, t0)
+        print('number transit times in baseline:', len(stats["transit_times"][stats["per_transit_count"]>0]), ' \nnumber of point in each transit: ', stats["per_transit_count"][stats["per_transit_count"]>0], '\ntransit likelihood:', stats["per_transit_log_likelihood"][stats["per_transit_count"]>0])
+
+    except ValueError as err:
+        print('getting error: ', err)
 
     stats = model.compute_stats(period, duration, t0)
     transit_times_all = stats["transit_times"][np.where(stats["per_transit_count"]>0)[0]]
@@ -1301,13 +1316,18 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
     repeat = False
     if len(periods)>0:# and len(factor_indxs)>0:
 
-        new_period, keep_factor = checking_BLS_periodicity(period, periods, t0, T0)
+        new_period, keep_factor, pop_per  = checking_BLS_periodicity(period, periods, t0, T0)
 
         if keep_factor>0:
             repeat=False
             intransit = np.logical_or(intransit, transit_mask(time, new_period, duration, t0))
-            period = new_period
-
+            period = new_period  
+            if pop_per>0:
+                print(f'popping_period: {pop_per}, and keeping period {period}, as the old is {pop_per/period}x the new')
+                pop_indx = periods.index(pop_per)
+               
+                periods.pop(pop_indx)
+                
         if keep_factor < -50 :
 
             intransit = np.logical_or(intransit,  transit_mask(time, new_period/2, duration, t0, buffer = 0.3))
@@ -1347,7 +1367,7 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
             # Mask transits using your transit_mask
         intransit = np.logical_or(intransit, transit_mask(time, period, duration, t0))
 
-        return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
+        return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
 
     # Accept candidate
     periods.append(period)
@@ -1367,7 +1387,7 @@ def using_BLS_recursive(time, flux, flux_err = None, intransit=None,
         return np.array(periods), np.array(T0), np.array(Tdur), np.array(depths), intransit
 
     # Recurse
-    return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,verbose=verbose, plot=plot, max_planets=max_planets,min_SDE=min_SDE, min_delta_BIC=min_delta_BIC, use_AIC=use_AIC,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
+    return using_BLS_recursive(time, flux, intransit=intransit,flux_err=flux_err,periods=periods, T0=T0, Tdur=Tdur, depths=depths, first=False)
 
     
 
@@ -1584,6 +1604,10 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
 #         final_indxes = range(len(T0_multi)) 
     else:
         final_indxes = []
+        
+        
+    
+
     for jjj in np.where(final_indxes)[0]:
         nnn+=1
         planet_name = str(nnn)
@@ -1592,6 +1616,7 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
         
 
         planet_df.loc[len(planet_df.index)] = [int(ticid), planet_name, periods_multi[jjj], T0_multi[jjj], Tdur_multi[jjj], min([1-depth_multi[jjj], depth_multi[jjj]]), SNR[jjj]]
+        
     print('done ', ticid, planet_df)
 
     if save_time:
@@ -1603,7 +1628,6 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
 
         pd.DataFrame(dict_time_sectors).to_csv(os.path.dirname(data_file)+'/time_periodic_took_to_run.csv', index= False, mode = 'a')
     
-
     if len(planet_df)>0:
         
         file_name = os.path.dirname(data_file)+'/found_planet_init_params'
@@ -1614,12 +1638,13 @@ def executing_total_periodic_search(data_file, ticid, catalog_df = False, TLS = 
             csv_name = '_'+str(i)+'_'+csv_name[-4:]
 
         planet_df.to_csv(file_name+csv_name, index = False)
+        
 
     
     return intransit, planet_df, params
 
 
-def approximate_common_denominator(float1, float2, precision=10**3):
+def approximate_common_denominator(float1, float2, precision=10**5):
     int1 = int(float1 * precision)
     int2 = int(float2 * precision)
 
@@ -1638,8 +1663,8 @@ def check_if_singles_are_periodic(T0_lst):
                     continue
                 else:
                     rrr = np.array(approximate_common_denominator(diff[i], diff[k]))
-                    if len(rrr[rrr>12.])>0:
-                        new_rrr.append(list(rrr[rrr>12.]))
+                    if len(rrr[rrr>2.5])>0:
+                        new_rrr.append(list(rrr[rrr>2.5]))
                         T0_vals.extend([T0_lst[i], T0_lst[j], T0_lst[k]])
 
 
@@ -1660,7 +1685,7 @@ def check_if_singles_are_periodic(T0_lst):
 
 
 
-def singles_search(ticid, data_total, intransit = [], catalog_df = False, confidence = 0.55,  verbose = True, run_1 = True, data_file = ''):
+def singles_search(ticid, data_total, intransit = [], catalog_df = False, confidence = 0.5,  verbose = True, run_1 = True, data_file = ''):
     
     print('SINGLES SEARCH')
     column_names = ['TICID', 'planet_name', 'period', 'T0', 'Tdur', 'depth']
@@ -1680,7 +1705,7 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
         total_flux = total_flux[~intransit]
         total_flux_err = total_flux_err[~intransit]
 
-    indexes_split_unorganize = breaking_up_data(total_time, break_val = 1., min_size = 1.)  
+    indexes_split_unorganize = breaking_up_data(total_time, break_val = 0.5, min_size = 1.)  
     all_good_indxs = []
 
     if len(indexes_split_unorganize)>1:
@@ -1690,13 +1715,13 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
     if len(all_good_indxs) == 0: 
         all_good_indxs = list(range(len(total_time)))
         
-    print('all good indexes (i.e., itertools result: ', type(all_good_indxs), len(total_time))
+#     print('all good indexes (i.e., itertools result: ', type(all_good_indxs), len(total_time))
     list_1 = list(all_good_indxs)
     list_2 = []
     for index, value in enumerate(total_time):
         list_2.append(index)
-    print('check differences in good indexes and indexes: ',  [item for item in list_1 if item not in list_2])
-    print('type of time array, ', type(total_time))
+#     print('check differences in good indexes and indexes: ',  [item for item in list_1 if item not in list_2])
+#     print('type of time array, ', type(total_time))
     total_time = total_time[all_good_indxs]
     total_flux = total_flux[all_good_indxs]
     total_flux_err =total_flux_err[all_good_indxs]
@@ -1716,6 +1741,9 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
         if len(bboxes)>0:
             n_events = len(bboxes)
             for j, boxes in enumerate(bboxes):
+#                 SNR = calc_rudimentary_snr(boxes[3], boxes[4])
+#                 if SNR>9:
+
                 t0_singles.append(boxes[1])
                 dur_singles.append(boxes[3])
                 depth_singles.append(1-boxes[4])
@@ -1952,7 +1980,7 @@ def extract_summary_dataframe(trace, hdi_prob=0.68):
     return custom_summary_df
 
 
-def sample_until_converged(model, max_attempts=2, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
+def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
     
     cores = min(chains, os.cpu_count() or 1) if cores is None else cores
@@ -2223,8 +2251,8 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn,
 #             a_rs_mu = pm.Deterministic("a_rs_mu", (con.G * con.rho_star * (per ** 2) / 3 /np.pi) ** (1/3))
 #             a_rs    = pm.TruncatedNormal("a_rs", mu=a_rs_mu, sigma=5.0, lower=1.0)
 
-            a_rs = pm.TruncatedNormal("a_rs", mu=aRs_from_Per_init, sigma=5.0, lower=1.0,
-                              initval=aRs_from_Per_init)
+            a_rs = pm.TruncatedNormal("a_rs", mu=a_rs_from_Per_init, sigma=5.0, lower=1.0,
+                              initval=a_rs_from_Per_init)
 
             per = pm.Deterministic("Per", pt.sqrt((3.0 * np.pi) / (con.G * con.rho_star)) * a_rs ** 1.5)
 
@@ -2237,7 +2265,7 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn,
             #  - many transits: very tight uniform (±1%)
             #  - otherwise: TN with ±20% support and sigma ~ 5% of Per
 
-            if nobs_est > 10:
+            if nobs_est > 3:
                 P_lower = max(0.25, Per * 0.99)
                 P_upper = Per * 1.01
                 P_sigma = None
@@ -2321,7 +2349,7 @@ def pymc_new_general_function(time, flux, unc, T0, other_pars, type_fn,
             sort_indx = np.argsort(folded_phase)
             
             phase = folded_phase[sort_indx]
-            use_index = np.abs(phase) < min([0.5, 5*pTdur])
+            use_index = np.abs(phase) < min([0.5, 3*pTdur])
             
             dt_minutes_min = np.nanpercentile(np.diff(np.unique(np.sort(time))), 5) * 24.0 * 60.0
             p_cad = float(np.clip(dt_minutes_min, 0.2, 60.0))

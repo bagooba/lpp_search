@@ -1,6 +1,29 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# --- PyTensor/PyMC parallel-safe setup: must be before any imports that pull in PyMC/PyTensor ---
+import os, uuid, tempfile, atexit, shutil
+
+# Use a fast, local, unique compiledir so parallel workers never collide on the same lock
+# Prefer /tmp (local disk) to avoid NFS locking issues.
+_pytensor_tmp_root = f"/tmp/{os.getenv('USER','me')}"
+os.makedirs(_pytensor_tmp_root, exist_ok=True)
+
+# Unique directory per process/run
+_pytensor_tmp_dir = tempfile.mkdtemp(prefix="pytensor_", dir=_pytensor_tmp_root)
+
+# Increase lock_timeout a bit to be robust in heavy parallel jobs
+os.environ["PYTENSOR_FLAGS"] = f"base_compiledir={_pytensor_tmp_dir},lock_timeout=120"
+
+# Optional: tidy up the temporary compiledir when the process exits
+@atexit.register
+def _cleanup_pytensor_cache():
+    try:
+        shutil.rmtree(_pytensor_tmp_dir, ignore_errors=True)
+    except Exception:
+        pass
+# --- end PyTensor/PyMC setup ---
+
 # In[1]:
 
 
@@ -55,6 +78,10 @@ from Functions_all import *
 import config as con
 # ###LET'S DO THIS!!!!
 
+import json
+from pathlib import Path
+from datetime import datetime
+from helpers_io_min import *
 
 def main(target,save_things = True):
 
@@ -65,6 +92,26 @@ def main(target,save_things = True):
     con.TICID = ticid
     gaiaID = str(target.split('/')[-1].split('_')[2].split('-')[-1])
     print('running ticid', ticid)
+    
+    
+    # --- JSON instrumentation start ---
+    out_dir = Path(target)  # write JSONs into the same target folder you already use
+    snapshot = {
+        "_schema": {"name": "config_snapshot", "version": "1.0.0"},
+        "target_id": f"TIC {ticid}",
+        "gaia_id": gaiaID,
+        "timestamp": iso_now(),
+        "modules_used": ["catalog_lookup", "periodic_search", "single_search", "pymc_fit"],  # describe what you actually run
+        # Optional context you have handy:
+        "inputs": {
+            "target_dir": target
+        }
+    }
+    write_json(out_dir / "config_snapshot.json", snapshot)
+
+    run_timer = Timer(); run_timer.start()
+    fit_records = []   # we’ll append one dict per planet attempt (success or fail)
+    # --- JSON instrumentation end ---
 
 #     if os.path.exists(target+'/tic_star_parameters.csv'):
 #         print('getting star params')
@@ -104,7 +151,7 @@ def main(target,save_things = True):
 #         for per in per_planet_df['period']:
 #             intransit = np.full(len(time), False)
  
-    singles_planet_df, sparams_df = singles_search(ticid, total_file_path, intransit = intransit, catalog_df = catalog_df, confidence = 0.55, run_1 = False, data_file = target)   
+    singles_planet_df, sparams_df = singles_search(ticid, total_file_path, intransit = np.full(len(intransit), False), catalog_df = catalog_df, confidence = 0.6, run_1 = False, data_file = target)   
         
     singles_planet_df['Ptype'] = 'Single'
     
@@ -147,8 +194,17 @@ def main(target,save_things = True):
 
 
 
-                    T0, per, depth, tdur, rp_rs, cosi, a, b, Norm, Win, Tau, SNR = snew_params_df.loc['t0', 'mean'], snew_params_df.loc['Per', 'mean'],   snew_params_df.loc['depth', 'mean'],          snew_params_df.loc['dur', 'mean'], snew_params_df.loc['rp_rs', 'mean'], snew_params_df.loc['cosi', 'mean'],           snew_params_df.loc['a_rs', 'mean'], snew_params_df.loc['b', 'mean'],     snew_params_df.loc['norm', 'mean'],           snew_params_df.loc['win', 'mean'],   snew_params_df.loc['tau', 'mean'],   snew_params_df.loc['SNR', 'mean']
 
+                    T0, per, depth, tdur, rp_rs, cosi, a, b, Norm, Win, Tau, SNR = snew_params_df.loc['t0', 'mean'], snew_params_df.loc['Per', 'mean'],   snew_params_df.loc['depth', 'mean'],          snew_params_df.loc['dur', 'mean'], snew_params_df.loc['rp_rs', 'mean'], snew_params_df.loc['cosi', 'mean'],           snew_params_df.loc['a_rs', 'mean'], snew_params_df.loc['b', 'mean'],     snew_params_df.loc['norm', 'mean'],           snew_params_df.loc['win', 'mean'],   snew_params_df.loc['tau', 'mean'],   snew_params_df.loc['SNR', 'mean']
+                    fit_records.append({
+                        "planet_name": int(planet['planet_name']),
+                        "ptype": "Single",
+                        "t0": float(T0),
+                        "period": None if pd.isna(per) else float(per),
+                        "snr": None if pd.isna(SNR) else float(SNR),
+                        "converged": bool(conv),
+                        "conv_on_run": bool(conv_attempt)
+                    })
                     print('checking convergence 5')
                     pd.DataFrame({'TICID':[con.TICID], 't0':[T0], 'per':[per], 'depth':[depth], 'converged': [conv], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0, 5))+'_Yconv_single_final.csv')
 
@@ -156,6 +212,17 @@ def main(target,save_things = True):
 
                 else:
                     print('checking convergence 6')
+                    
+                    fit_records.append({
+                        "planet_name": int(planet['planet_name']),
+                        "ptype": "Single",
+                        "t0": float(planet['T0']),
+                        "period": None,
+                        "snr": None if 'depth' not in planet or pd.isna(planet['depth']) else float(planet['depth']),
+                        "converged": False,
+                        "conv_on_run": False
+                    })
+
                     pd.DataFrame({'TICID':[con.TICID], 't0':[planet['T0']], 'per':[np.nan], 'depth':[planet['depth']], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(planet['T0'], 5))+'_Nconv_single_final.csv')
 
 
@@ -163,10 +230,10 @@ def main(target,save_things = True):
 #                 print('periodic planet fit', planet)
                 
 
-                print('per_planet_df', per_planet_df)
+                print('per_planet_df', pparams_df)
         
-                if type(per_planet_df.loc['Per', 'mean']<25) == np.bool_:
-                    keep = per_planet_df.loc['Per', 'mean']<25
+                if type(pparams_df.loc['Per', 'mean']<25) == np.bool_:
+                    keep = pparams_df.loc['Per', 'mean']<25
                 else:
                     keep = list(pparams_df.loc['Per', 'mean']<25)[-1]
 
@@ -180,17 +247,35 @@ def main(target,save_things = True):
                     
                     T0, period_, depth, tdur, rp_rs, cosi, a, b, ab, Norm, Win, Tau, SNR = pnew_params_df.loc['t0', 'mean'], pnew_params_df.loc['Per', 'mean'],   pnew_params_df.loc['depth', 'mean'],                  pnew_params_df.loc['dur', 'mean'], pnew_params_df.loc['rp_rs', 'mean'], pnew_params_df.loc['cosi', 'mean'],                   pnew_params_df.loc['a_rs', 'mean'], pnew_params_df.loc['b', 'mean'],     catalog_df[['aLSM', 'bLSM']].values[0].astype(float), pnew_params_df.loc['norm', 'mean'], pnew_params_df.loc['win', 'mean'],   pnew_params_df.loc['tau', 'mean'],                    pnew_params_df.loc['SNR', 'mean']
                     u1, u2 = ab
-                    new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
+                    new_params = np.array([T0, period_, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
                     
                     print('checking convergence 7')
                     pd.DataFrame({'TICID':[con.TICID], 't0':[T0], 'per':[period_], 'depth':[depth], 'converged': [conv], 'conv_on_run':[conv_attempt]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(T0, 5))+'_Yconv_per_final.csv')
-
+                    
+                    fit_records.append({
+                        "planet_name": int(planet['planet_name']),
+                        "ptype": "Period",
+                        "t0": float(T0),
+                        "period": None if pd.isna(period_) else float(period_),
+                        "snr": None if pd.isna(SNR) else float(SNR),
+                        "converged": bool(conv),
+                        "conv_on_run": bool(conv_attempt)
+                    })
+                    
                     new_params = np.array([T0, per, depth, tdur, rp_rs, cosi, a, b, u1, u2, Norm, Win, Tau, SNR])
 
                 else:
                     print('checking convergence 8')
                     pd.DataFrame({'TICID':[con.TICID], 't0':[planet['T0']], 'per':[planet['period']], 'depth':[planet['depth']], 'converged': [False], 'conv_on_run':[np.nan]}).to_csv('../checking_convergence_output/'+str(con.TICID)+'_'+str(round(planet['T0'], 5))+'_Nconv_per_final.csv')
-
+                    fit_records.append({
+                        "planet_name": int(planet['planet_name']),
+                        "ptype": "Period",
+                        "t0": float(planet['T0']),
+                        "period": None if pd.isna(planet['period']) else float(planet['period']),
+                        "snr": None if pd.isna(planet['depth']) else float(planet['depth']),
+                        "converged": False,
+                        "conv_on_run": False
+                    })
 
             else:
                 print('something is wrong')
@@ -217,11 +302,56 @@ def main(target,save_things = True):
     #             print(key, new_planet_df[key])
             if len(new_planet_df)>0:
                 creating_first_DV_report_page(ticid, total_file_path, new_planet_df, catalog_df, intransit)
-    else: return
+        # --- JSON summary at the end of main() ---
+        runtime = run_timer.stop()
 
+        # Decide a simple per-target status
+        if len(fit_records) == 0:
+            if len(all_planets_df) == 0:
+                overall_status = "no_candidates"        # search produced no candidates to fit
+            else:
+                overall_status = "sampler_failed"       # candidates existed but no fit attempts recorded
+        else:
+            overall_status = "converged" if any(fr.get("converged") for fr in fit_records) else "sampler_failed"
+
+        summary_payload = {
+            "_schema": {"name": "summary", "version": "1.0.0"},
+            "target_id": f"TIC {ticid}",
+            "status": overall_status,                   # "converged" | "sampler_failed" | "no_candidates"
+            "counts": {
+                "n_candidates_total": int(len(all_planets_df)) if isinstance(all_planets_df, pd.DataFrame) else 0,
+                "n_fit_attempts": int(len(fit_records)),
+                "n_converged": int(sum(1 for fr in fit_records if fr.get("converged")))
+            },
+            "runtime_sec": float(runtime),
+            "fits": fit_records                         # small list for quick triage
+        }
+        write_json(out_dir / "summary.json", summary_payload)
+        # --- end JSON summary ---
+    else:
+        # write summary BEFORE returning
+        runtime = run_timer.stop()
+        summary_payload = {
+            "_schema": {"name": "summary", "version": "1.0.0"},
+            "target_id": f"TIC {ticid}",
+            "status": "no_candidates",
+            "counts": {
+                "n_candidates_total": 0,
+                "n_fit_attempts": 0,
+                "n_converged": 0
+            },
+            "runtime_sec": float(runtime),
+            "fits": []
+        }
+        write_json(out_dir / "summary.json", summary_payload)
+        return
+    
+    
 if __name__ == "__main__":
-    import multiprocessing as mpl
-    # from schwimmbad import JoblibPool
+
+    import multiprocessing as mp
+    if mp.get_start_method(allow_none=True) != "spawn":
+        mp.set_start_method("spawn", force=True)
 
     try:
         file_num = int(sys.argv[1])
@@ -231,7 +361,7 @@ if __name__ == "__main__":
 #     # file_num +=1000
 
     time1 = tm.time()
-    target_files = sorted(glob.glob('../toi_data/*check'))
+    target_files = sorted(glob.glob('../new_toi_data/*check'))
 # 
     # pool = mpl.Pool()
 

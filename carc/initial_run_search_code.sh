@@ -13,8 +13,9 @@
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=0-125  # for 105 files
+#SBATCH --array=0-157  # for 158 files
 
+cd ../src
 module load miniconda3
 source activate /users/malharris/miniconda3/envs/envRunningInJupyter
 

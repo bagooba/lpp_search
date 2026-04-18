@@ -8,6 +8,9 @@ import json
 import numpy as np
 import pandas as pd
 
+from datetime import datetime
+from core.planet_candidate import PlanetCandidate
+
 class PipelineStage(Enum):
     RAW = auto()
     EXTRACTED = auto()
@@ -38,6 +41,10 @@ class Target:
     # quick singles state
     dt_prelim_found: Optional[bool] = None
     quick_singles_t0: List[float] = field(default_factory=list)
+
+    # candidate run bookkeeping (pointers only; keep state small)
+    last_run_id: Optional[str] = None
+    last_candidates_run: Optional[str] = None
 
     def __post_init__(self):
         self.root_dir = Path(self.root_dir)
@@ -76,6 +83,8 @@ class Target:
             "catalog": self._catalog,
             "dt_prelim_found": self.dt_prelim_found,
             "quick_singles_t0": list(self.quick_singles_t0),
+            "last_run_id": self.last_run_id,
+            "last_candidates_run": self.last_candidates_run,
         }
         self.state_path.write_text(json.dumps(payload, indent=2))
 
@@ -97,6 +106,9 @@ class Target:
         self.source_fits = [Path(s) for s in pl.get("source_fits", [])]
         self.rho_star = pl.get("rho_star", self.rho_star)
         self.gaia_id = pl.get("gaia_id", self.gaia_id)
+
+        self.last_run_id = pl.get("last_run_id", self.last_run_id)
+        self.last_candidates_run = pl.get("last_candidates_run", self.last_candidates_run)
 
         if isinstance(pl.get("catalog"), dict):
             self._catalog = {str(k): v for k, v in pl["catalog"].items()}
@@ -130,3 +142,49 @@ class Target:
         t = cls(ticid=ticid, gaia_id=gaia_id, root_dir=Path(dir_path))
         t.load_state()
         return t
+
+    # -------- candidates (per-run artifacts) --------
+    @property
+    def candidates_dir(self) -> Path:
+        d = self.root_dir / "candidates"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def new_run_id(self) -> str:
+        # safe filename-friendly timestamp
+        return datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+
+    def candidates_run_path(self, run_id: str) -> Path:
+        return self.candidates_dir / f"run_{run_id}.json"
+
+    def save_candidates(self, run_id: str, candidates: List[PlanetCandidate]) -> Path:
+        path = self.candidates_run_path(run_id)
+        payload = {
+            "run_id": run_id,
+            "ticid": self.ticid,
+            "gaia_id": self.gaia_id,
+            "candidates": [c.to_dict() for c in candidates],
+        }
+        path.write_text(json.dumps(payload, indent=2))
+
+        # update pointers in state
+        self.last_run_id = run_id
+        self.last_candidates_run = str(path.relative_to(self.root_dir))
+        self.save_state()
+        return path
+
+    def load_candidates(self, path: Optional[Path] = None) -> List[PlanetCandidate]:
+        if path is None:
+            if not self.last_candidates_run:
+                return []
+            path = self.root_dir / self.last_candidates_run
+        if not Path(path).exists():
+            return []
+        pl = json.loads(Path(path).read_text())
+        cand_list = pl.get("candidates", [])
+        out: List[PlanetCandidate] = []
+        if isinstance(cand_list, list):
+            for d in cand_list:
+                if isinstance(d, dict):
+                    out.append(PlanetCandidate.from_dict(d))
+        return out

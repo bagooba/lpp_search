@@ -6,6 +6,8 @@ from pathlib import Path
 
 from core.target import Target, PipelineStage
 from stages.search_singles import singles_search, SinglesSearchConfig
+from utils.ticid_input_coordination import find_target_dir_by_ticid
+from utils.queue import enqueue
 
 TARGET_GLOB = "../toi_data/target_*"
 
@@ -24,7 +26,7 @@ def _has_merged_data(target: Target, flavour: str) -> bool:
     rd = target.root_dir
     return any(rd.glob(f"*{flavour}*_*total.csv")) or any(rd.glob("*total.csv"))
 
-def main(idx: int) -> None:
+def main(idx):
     dirs = sorted(glob.glob(TARGET_GLOB))
     if not (0 <= idx < len(dirs)):
         print(f"[FATAL] idx={idx} out of range for {len(dirs)} targets.")
@@ -57,10 +59,16 @@ def main(idx: int) -> None:
     
     if not t.stage_at_least(PipelineStage.SEARCHED):
         t.set_stage(PipelineStage.SEARCHED)
+
     else:
         # already beyond SEARCHED (FITTED/REPORTED), leave it alone
         t.save_state()
 
+
+    if found:
+        enqueue("03", t.ticid)
+    else:
+        enqueue("DONE_EMPTY", t.ticid)
 
     print(f"[TIC {t.ticid}] {'FOUND' if found else 'no'} transit-like signal")
 

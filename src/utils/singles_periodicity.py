@@ -1,5 +1,7 @@
 # utils/singles_periodicity.py
 import numpy as np
+from core.planet_candidate import PlanetCandidate
+
 
 # --- paste your existing functions here ---
 def prepping_singles_for_periodic_check(
@@ -210,3 +212,66 @@ def seed_periods_from_dt_events(
     """
     modes = periodic_modes_from_dt_events(events, min_support=min_support, **mode_kwargs)
     return [float(m["P"]) for m in modes[:top_k]]
+
+
+
+def candidate_from_mode(mode, events, *, source, notes_prefix=""):
+    """
+    Convert one periodic mode (P/T0/members) + DT events into a Periodic PlanetCandidate.
+    Returns (PlanetCandidate, member_indices) or (None, None).
+    """
+    members = mode.get("members", [])
+    if members is None or len(members) == 0:
+        return None, None
+
+    member_events = [events[i] for i in members]
+    dur_vals = [e.duration_days for e in member_events if e.duration_days is not None]
+    dep_vals = [e.depth for e in member_events if e.depth is not None]
+    if len(dur_vals) == 0 or len(dep_vals) == 0:
+        return None, None
+
+    dur_est = float(np.nanmedian(dur_vals))
+    dep_est = float(np.nanmedian(dep_vals))
+    if not (np.isfinite(dur_est) and np.isfinite(dep_est)):
+        return None, None
+
+    P = float(mode["P"])
+    T0 = float(mode["T0"])
+    support = int(mode.get("support", len(member_events)))
+    transit_times_days = [event.t0_days for event in member_events]
+    pc = PlanetCandidate(
+        ptype="Periodic",
+        t0_days=T0,
+        period_days=P,
+        duration_days=dur_est,
+        depth=dep_est,
+        n_transits_obs=support,
+        source=source,
+        notes=f"{notes_prefix}support={support}",
+        
+    )
+    return pc, np.array(members, dtype=int)
+
+def periodic_candidates_from_modes(modes, events, *, source, min_support=3, notes_prefix=""):
+    out = []
+    for m in modes:
+        if int(m.get("support", 0)) < min_support:
+            continue
+        pc, members = candidate_from_mode(m, events, source=source, notes_prefix=notes_prefix)
+        if pc is not None:
+            out.append((pc, members))
+    return out
+
+
+def mark_single_members_consumed(single_candidates, member_indices, periodic_candidate_id, note_prefix="promoted_into="):
+    """
+    Mutate singles in-place AFTER a successful periodic fit:
+      - default=False
+      - notes append promoted_into=<candidate_id>
+    """
+    for i in member_indices:
+        sc = single_candidates[i]
+        sc.default = False
+        cur = sc.notes or ""
+        add = f"{note_prefix}{periodic_candidate_id}"
+        sc.notes = (cur + "; " + add) if cur else add

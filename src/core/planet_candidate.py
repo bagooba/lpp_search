@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 import math
 
 
@@ -42,7 +42,7 @@ class PlanetCandidate:
     snr: Optional[float] = None
     sde: Optional[float] = None
     n_transits_obs: Optional[int] = None
-
+    transit_times_days: Optional[List[float]] = None  # periodic: true transit times; single: optional/unused
     # --- provenance ---
     source: str = ""  # e.g. "BLS", "DT", "SINGLES_CLUSTER", "MANUAL"
 
@@ -93,6 +93,30 @@ class PlanetCandidate:
             return
         self.fit_is_current = (self.fit_fingerprint == self.compute_fit_fingerprint())
 
+
+
+    @property
+    def observed_transit_times_days(self) -> List[float]:
+        """
+        For alias-dedup / clustering:
+          - Single: [t0_days]
+          - Periodic: transit_times_days if present, else [t0_days] as a safe fallback
+        """
+        if self.ptype == "Single":
+            return [float(self.t0_days)]
+        if self.transit_times_days:
+            return [float(x) for x in self.transit_times_days]
+        # fallback so periodic candidates still have something usable
+        return [float(self.t0_days)]
+    
+
+    def set_transit_times(self, times: Optional[List[float]]) -> None:
+        if not times:
+            self.transit_times_days = None
+            return
+        arr = sorted({float(t) for t in times if t is not None and np.isfinite(float(t))})
+        self.transit_times_days = arr if arr else None
+
     # -----------------------------
     # JSON (dict) serialization
     # -----------------------------
@@ -106,6 +130,7 @@ class PlanetCandidate:
             "snr": None if self.snr is None else float(self.snr),
             "sde": None if self.sde is None else float(self.sde),
             "n_transits_obs": None if self.n_transits_obs is None else int(self.n_transits_obs),
+            "transit_times_days": None if self.transit_times_days is None else [float(t) for t in self.transit_times_days],
             "source": self.source,
             "fit_fingerprint": self.fit_fingerprint,
             "fit_is_current": bool(self.fit_is_current),
@@ -125,6 +150,7 @@ class PlanetCandidate:
             snr=(None if d.get("snr") is None else float(d["snr"])),
             sde=(None if d.get("sde") is None else float(d["sde"])),
             n_transits_obs=(None if d.get("n_transits_obs") is None else int(d["n_transits_obs"])),
+            transit_times_days=None if d.get("transit_times_days") is None else [float(t) for t in d["transit_times_days"]],
             source=str(d.get("source", "")),
             fit_fingerprint=d.get("fit_fingerprint"),
             fit_is_current=bool(d.get("fit_is_current", False)),

@@ -7,6 +7,8 @@ import pandas as pd
 
 from core.target import Target
 from stages.dataprep import DataPrep
+from utils.queue import enqueue
+
 
 def prepare_one_target(target_dir: Path) -> None:
     ticid, gaia_id = Target.discover_ids_from_dirname(target_dir)
@@ -16,11 +18,14 @@ def prepare_one_target(target_dir: Path) -> None:
 
     dp = DataPrep(target=t, flavour="TGLC")
     total_file = dp.prepare()
+    enqueue("02", t.ticid)
+    
     print(f"Prepared TIC {t.ticid}: {total_file}")
+    
 
 if __name__ == "__main__":
     t0 = tm.time()
-    target_dirs = sorted(glob.glob("../oi_data/target_*"))  # adjust your path
+    target_dirs = sorted(glob.glob("../toi_data/target_*"))  # adjust your path
     print("num files", len(target_dirs))
     for td in target_dirs:
         try:

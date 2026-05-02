@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import glob
 import os
+from runpy import run_path
 import sys
 import json
 from pathlib import Path
@@ -14,9 +15,14 @@ from core.planet_candidate import PlanetCandidate
 from core.transit_event import TransitEvent
 from core.periodic_event import PeriodicEvent
 
-from utils.find_total_csv import find_total_csv
+from utils.find_total_csv import finda_total_csv
 from utils.run_json import upsert_run_json, append_run_json_list
-from utils.singles_periodicity import periodic_modes_from_dt_events
+from utils.singles_periodicity import periodic_modes_from_dt_events, periodic_candidates_from_modes, mark_single_members_consumed
+
+
+from utils.alias_dedup import alias_dedup_periodic_candidates
+from utils.ticid_input_coordination import find_target_dir_by_ticid
+from utils.queue import enqueue
 
 from stages.search_singles import singles_search, SinglesSearchConfig
 from engines.pymc_core import pymc_fit_candidate
@@ -97,6 +103,13 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
     if ok and summary_df is not None:
         cand.pymc_summary = summary_df.to_dict()
         cand.mark_fitted()
+
+        # Update working hypothesis from PyMC medians
+        cand.t0_days = _summary_median(cand, "t0", fallback=cand.t0_days)
+        if cand.ptype == "Periodic":
+            cand.period_days = _summary_median(cand, "Per", fallback=cand.period_days)
+        cand.duration_days = _summary_median(cand, "dur", fallback=cand.duration_days)
+        cand.depth = _summary_median(cand, "depth", fallback=cand.depth)    
     else:
         cand.fit_is_current = False
 
@@ -110,6 +123,39 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
 
     upsert_run_json(run_path, {"status": {"stage": "pymc_fit", "state": "done", "attempt_id": attempt_id}})
     return bool(ok)
+
+
+def finalize_pass1_singles_only(target, run_path, run_json, global_csv_path):
+    raw_pass1 = run_json.get("dt_events_raw_pass1", [])
+    pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
+
+    flavour = target.data_source.value
+    total_csv = find_total_csv(target.root_dir, flavour)
+    df = pd.read_csv(total_csv).dropna(subset=["FLUX"])
+    time = df["TIME"].to_numpy(float)
+    flux = df["FLUX"].to_numpy(float)
+    unc = df["FLUX_ERR"].to_numpy(float) if "FLUX_ERR" in df.columns else np.full_like(flux, np.nanstd(flux))
+
+    single_candidates = []
+    for ev in pass1_events:
+        sc = PlanetCandidate(
+            ptype="Single",
+            t0_days=float(ev.t0_days),
+            period_days=None,
+            duration_days=float(ev.duration_days),
+            depth=float(ev.depth),
+            source="DT_pass1",
+        )
+        fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
+        single_candidates.append(sc)
+
+    per_target_csv = write_final_candidates_csv(target, single_candidates)
+    append_global_candidates_csv(single_candidates, target, global_csv_path)
+
+    target.set_stage(PipelineStage.FITTED)
+    enqueue("DONE_FOUND", target.ticid) 
+    upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "done_no_periodic", "finished_at": datetime.now().isoformat()}})
+    print(f"[DONE] {target.root_dir.name}: periodic=0; wrote {per_target_csv}")
 
 def _summary_median(cand, varname, fallback=None):
     """
@@ -170,10 +216,20 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     # Load run json + periodic latest
     run_json = load_run_json(run_path)
 
-    periodic_raw = run_json.get("periodic_events_raw_latest", [])
+    periodic_raw = run_json.get("periodic_events_raw_latest", None)
+
+
+
     if not periodic_raw:
-        print(f"[SKIP] {target.root_dir.name}: no periodic_events_raw_latest (run 03 first).")
+        attempts = run_json.get("periodic_attempts", [])
+        if attempts:
+            periodic_raw = attempts[-1].get("periodic_events_raw", [])
+
+    if not periodic_raw:
+        finalize_pass1_singles_only(target, run_path, run_json, global_csv_path)
         return
+    
+    
 
     periodic_events = [PeriodicEvent.from_dict(d) for d in periodic_raw]
 
@@ -190,6 +246,11 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     # 1) Convert periodic events -> periodic candidates and fit them
     periodic_candidates = []
     for ev in periodic_events:
+        if ev.duration_days is None or ev.depth is None:
+            upsert_run_json(run_path, {
+                "warnings": [f"Skipped periodic event with missing duration/depth: {ev.to_dict()}"]
+            })
+            continue
         pc = PlanetCandidate(
             ptype="Periodic",
             t0_days=float(ev.t0_days),
@@ -197,31 +258,40 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             duration_days=float(ev.duration_days) if ev.duration_days is not None else None,
             depth=float(ev.depth) if ev.depth is not None else None,
             n_transits_obs=ev.n_transits_obs,
+            transit_times_days = ev.transit_times_days,
             source="BLS",
         )
         fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
         periodic_candidates.append(pc)
 
-    # 2) Mask using fitted periodic candidates
+    # 2) Mask using fitted periodic candidates ONLY
     intransit = np.zeros_like(time, dtype=bool)
     for pc in periodic_candidates:
-        intransit |= periodic_mask_from_fitted_candidate(time, pc, buffer_days=0.2)
+        if pc.fit_is_current:
+            intransit |= periodic_mask_from_fitted_candidate(time, pc, buffer_days=0.2)
 
-    # 3) DT pass-2 (fast) on residuals (only if periodic candidates exist)
-    singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
-    singles_search(
-        target,
-        cfg=singles_cfg,
-        exclude_mask=intransit,
-        pass_label="pass2",
-        run_id=run_path.stem.replace("run_", ""),
-        run_path=run_path
-    )
+    have_mask = bool(intransit.any())
 
-    # Reload run json to get pass2 events
-    run_json = load_run_json(run_path)
-    raw_pass2 = run_json.get("dt_events_raw_pass2", [])
-    pass2_events = [TransitEvent.from_dict(d) for d in raw_pass2] if isinstance(raw_pass2, list) else []
+    # 3) DT pass-2 (residual) ONLY if we actually masked something
+
+    pass2_events = []
+
+    if have_mask:
+        singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
+        singles_search(
+            target,
+            cfg=singles_cfg,
+            exclude_mask=intransit,
+            pass_label="pass2",
+            run_id=run_path.stem.replace("run_", ""),
+            run_path=run_path
+        )
+        # Reload run json to get pass2 events
+
+        run_json = load_run_json(run_path)
+        raw_pass2 = run_json.get("dt_events_raw_pass2", [])
+        pass2_events = [TransitEvent.from_dict(d) for d in raw_pass2] if isinstance(raw_pass2, list) else []
+
 
     # 4) Fit the pass2 events as singles (then later: promote periodic if periodicity emerges)
     single_candidates = []
@@ -234,6 +304,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             depth=float(ev.depth),
             snr=None if ev.snr is None else float(ev.snr),
             source="DT_pass2",
+            transit_times_days=[float(ev.t0_days)]
         )
         fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
         single_candidates.append(sc)
@@ -241,18 +312,35 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     # 5) Optional promotion: check if pass2 DT events contain periodic modes
     # (You said: if periodic fit fails, leave them as singles.)
     modes = periodic_modes_from_dt_events(pass2_events, min_support=3, use_depth=True)
-    upsert_run_json(run_path, {"pass2_periodic_modes": [{"P": m["P"], "T0": m["T0"], "support": m["support"]} for m in modes]})
 
-    # TODO tomorrow: for strong modes, create a periodic candidate and fit it, then decide keep/promote.
+    promotions = periodic_candidates_from_modes(
+        modes,
+        pass2_events,
+        source="DT_PASS2_PROMOTED",
+        min_support=3,
+        notes_prefix="promoted_from_pass2; "
+    )
+
+    promoted_periodic_candidates = []
+    for pc, member_idx in promotions:
+        ok = fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
+        if ok:
+            promoted_periodic_candidates.append(pc)
+            # ONLY consume singles if periodic fit succeeds
+            mark_single_members_consumed(single_candidates, member_idx, pc.candidate_id())
+
+
+    alias_dedup_periodic_candidates(periodic_candidates + promoted_periodic_candidates)
 
     # 6) Write outputs (no PDFs)
-    final_candidates = periodic_candidates + single_candidates
+    final_candidates = periodic_candidates + promoted_periodic_candidates + single_candidates 
+
     per_target_csv = write_final_candidates_csv(target, final_candidates)
     append_global_candidates_csv(final_candidates, target, global_csv_path)
 
     # Update stage
     target.set_stage(PipelineStage.FITTED)
-
+    enqueue("DONE_FOUND", target.ticid)
     upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "done", "finished_at": datetime.now().isoformat()}})
     print(f"[DONE] {target.root_dir.name}: wrote {per_target_csv} and appended to {global_csv_path}")
 

@@ -6,15 +6,18 @@ from pathlib import Path
 from datetime import datetime
 
 from core.target import Target
+from lpp_search.src.core import target
 from stages.search_periodic import periodic_search, PeriodicSearchConfig
 from utils.run_json import upsert_run_json, append_run_json_list
 from core.transit_event import TransitEvent
 
 from utils.singles_periodicity import seed_periods_from_dt_events
+from utils.ticid_input_coordination import find_target_dir_by_ticid, resolve_ticid
+from utils.queue import enqueue
 
 TARGET_GLOB = "../toi_data/target_*"   # adjust as needed
 
-def main(idx: int) -> None:
+def main(idx):
     dirs = sorted(glob.glob(TARGET_GLOB))
     if not (0 <= idx < len(dirs)):
         print(f"[FATAL] idx={idx} out of range for {len(dirs)} targets.")
@@ -123,12 +126,13 @@ def main(idx: int) -> None:
             "updated_at": datetime.now().isoformat(),
         }
     })
-
+    enqueue("04", target.ticid)
     print(f"[DONE] {root.name}: periodic_events={len(periodic_events)} attempt_id={attempt_id}")
+
 
 if __name__ == "__main__":
     idx_str = os.environ.get("SLURM_ARRAY_TASK_ID") or (sys.argv[1] if len(sys.argv) > 1 else None)
     if idx_str is None:
-        print("Usage: python scripts/03_run_periodic_search.py <index>  # or SLURM_ARRAY_TASK_ID")
+        print("Usage: python scripts/02_run_quick_singles.py <index>  # or SLURM_ARRAY_TASK_ID")
         sys.exit(1)
     main(int(idx_str))

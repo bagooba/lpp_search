@@ -5,12 +5,18 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from core.target import Target
 from stages.search_periodic import periodic_search, PeriodicSearchConfig
 from utils.run_json import upsert_run_json, append_run_json_list
 from core.transit_event import TransitEvent
 
-from utils.singles_periodicity import seed_periods_from_dt_events
+from utils.singles_periodicity import seed_periods_frgoom_dt_events
 from utils.queue import enqueue
 
 TARGET_GLOB = "../toi_data/target_*"   # adjust as needed

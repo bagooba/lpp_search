@@ -21,7 +21,6 @@ from utils.singles_periodicity import periodic_modes_from_dt_events, periodic_ca
 
 
 from utils.alias_dedup import alias_dedup_periodic_candidates
-from utils.ticid_input_coordination import find_target_dir_by_ticid
 from utils.queue import enqueue
 
 from stages.search_singles import singles_search, SinglesSearchConfig

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from core.target import Target, PipelineStage
 from stages.search_singles import singles_search, SinglesSearchConfig
-from utils.ticid_input_coordination import find_target_dir_by_ticid
 from utils.queue import enqueue
 
 TARGET_GLOB = "../toi_data/target_*"

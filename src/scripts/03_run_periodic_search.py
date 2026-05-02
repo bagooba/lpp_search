@@ -6,13 +6,11 @@ from pathlib import Path
 from datetime import datetime
 
 from core.target import Target
-from lpp_search.src.core import target
 from stages.search_periodic import periodic_search, PeriodicSearchConfig
 from utils.run_json import upsert_run_json, append_run_json_list
 from core.transit_event import TransitEvent
 
 from utils.singles_periodicity import seed_periods_from_dt_events
-from utils.ticid_input_coordination import find_target_dir_by_ticid, resolve_ticid
 from utils.queue import enqueue
 
 TARGET_GLOB = "../toi_data/target_*"   # adjust as needed

@@ -189,7 +189,6 @@ def periodic_modes_from_dt_events(
             "P_min": P_min,
             "P_max": P_max,
             "rel_merge": rel_merge,
-            "min_support": min_support
         },
         scorer_kwargs={
             "use_depth": use_depth,

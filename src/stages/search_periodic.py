@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from core.target import Target
-import config as con
+import utils.config as con
 
 from astropy.timeseries import BoxLeastSquares
 import scipy.stats as sst

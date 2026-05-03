@@ -5,6 +5,13 @@ import glob
 import time as tm
 import pandas as pd
 
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from core.target import Target
 from stages.dataprep import DataPrep
 from utils.queue import enqueue

@@ -14,11 +14,11 @@ import matplotlib.pyplot as plt
 import lightkurve as lk
 import deep_transit as dt
 
-import config as con
+from core.transit_event import TransitEvent
 from utils.segments import breaking_up_data
 from utils.find_total_csv import find_total_csv
 from utils.run_json import upsert_run_json
-
+import utils.config as con
 
 def make_LightKurveObject(time, flux, flux_err):
     lc = lk.TessLightCurve()
@@ -82,9 +82,10 @@ def detect_transit_events(time, flux, flux_err, cfg):
     This is event-level output (NOT planet candidates yet).
     """
     bboxes = DT_analysis(time, flux, flux_err, cfg.confidence, DT_Quite=True, is_flat=True)
-
     events = []
-    if not bboxes:
+    
+    print('bboxes', type(bboxes))
+    if len(bboxes) == 0:
         return events, bboxes
 
     for boxes in bboxes:

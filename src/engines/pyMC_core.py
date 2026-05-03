@@ -13,7 +13,7 @@ import arviz as az
 from pytensor.graph import Op, Apply
 from pytensor import config as pt_config
 
-import config as con  # keep con.G only
+import utils.config as con  # keep con.G only
 
 
 
@@ -67,7 +67,7 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
             return trace, attempt
 #         print('checking nans trace', trace.posterior['SNR'])
         print('checking nanas summary', az.summary(trace))
-        print(f"Attempt {attempt-1} failed to converge.")
+        print(f"Attempt {attempt} failed to converge.")
 
     raise RuntimeError("Model did not converge after multiple attempts.")
 
@@ -170,10 +170,13 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
             raise ValueError("Periodic candidate missing period_days.")
         Per_in = float(Per_in)
         
+        
+    # Always do data prep first so cad exists
+    time, flux, unc, cad = prepare_fit_data(time, flux, unc, candidate)
+
+    # Then validate
     if candidate.depth is None or candidate.duration_days is None:
         raise ValueError("Candidate missing depth or duration_days.")
-        # data prep
-        time, flux, unc, cad = prepare_fit_data(time, flux, unc, candidate)
 
     # pTdur is your “window scale”. Keep your old convention unless you add a dedicated field later.
     pTdur = 1.5 * float(candidate.duration_days)
@@ -184,6 +187,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
     nobs_est = None
     if type_fn == "Periodic":
         nobs_est = getattr(candidate, "n_transits_obs", None)
+        print('nobs_est from candidate:', nobs_est)
         if nobs_est is None:
             windows = make_windows_from_time_stamps(np.array(time), gap_threshold=0.5)
             tmp = 0
@@ -217,7 +221,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
         else:  # Periodic
             Per = Per_in
-            if nobs_est > 3:
+            if nobs_est >= 3:
                 per = pm.Uniform("Per", lower=max(0.25, Per * 0.99), upper=Per * 1.01)
                 a_rs = pm.Uniform("a_rs", lower=1.0, upper=300.0)
                 fold_this = True
@@ -272,6 +276,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         norm = pm.Deterministic("norm", median_pytensor(out_flux))
 
         if fold_this:
+            print('phase folded')
             folded_phase = ((time - T0 + 0.5 * Per_in) % Per_in) - (0.5 * Per_in)
             sort_indx = np.argsort(folded_phase)
             phase = folded_phase[sort_indx]

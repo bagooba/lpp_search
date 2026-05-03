@@ -68,7 +68,7 @@ import warnings
 warnings.filterwarnings("ignore")
 display(HTML("<style>.container { width:95% !important; }</style>"))
 
-import config as con
+import lpp_search.src.utils.config as con
 # In[32]:
 
 

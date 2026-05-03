@@ -118,6 +118,9 @@ class Target:
                 setattr(self, col, val)
             self._compute_rho_star_if_possible()
 
+        if not isinstance(getattr(self, "_catalog", None), dict) or len(self._catalog) == 0:
+            self.load_catalog_csv()
+
         self.dt_prelim_found = pl.get("dt_prelim_found", self.dt_prelim_found)
         t0_list = pl.get("quick_singles_t0", [])
         if isinstance(t0_list, list):
@@ -204,6 +207,32 @@ class Target:
         return out
 
         # inside Target class (core/target.py)
+
+
+    def load_catalog_csv(self) -> bool:
+        """
+        Load per-target catalog from tic_star_parameters.csv if present.
+        Returns True if it loaded a non-empty row.
+        """
+        cat_csv = self.root_dir / "tic_star_parameters.csv"
+        if not cat_csv.exists():
+            return False
+
+        df = pd.read_csv(cat_csv)
+        if df.empty:
+            return False
+
+        row = df.iloc[0]  # pandas Series
+        # populate internal catalog dict + attributes
+        self._catalog = {str(k): (None if pd.isna(v) else v) for k, v in row.items()}
+        for col, val in self._catalog.items():
+            setattr(self, col, val)
+
+        # optional: keep catalog_row consistent
+        self.catalog_row = row
+
+        self._compute_rho_star_if_possible()
+        return True
 
     def stage_rank(self) -> int:
         order = {

@@ -10,12 +10,19 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
 from core.target import Target, PipelineStage
 from core.planet_candidate import PlanetCandidate
 from core.transit_event import TransitEvent
 from core.periodic_event import PeriodicEvent
 
-from utils.find_total_csv import finda_total_csv
+from utils.find_total_csv import find_total_csv
 from utils.run_json import upsert_run_json, append_run_json_list
 from utils.singles_periodicity import periodic_modes_from_dt_events, periodic_candidates_from_modes, mark_single_members_consumed
 
@@ -24,10 +31,9 @@ from utils.alias_dedup import alias_dedup_periodic_candidates
 from utils.queue import enqueue
 
 from stages.search_singles import singles_search, SinglesSearchConfig
-from engines.pymc_core import pymc_fit_candidate
+from engines.pyMC_core import pymc_fit_candidate
 
-
-TARGET_GLOB = "../toi_data/target_*"   # adjust
+TARGET_GLOB = "./toi_data/target_*"   # adjust
 
 
 # ---------------------------
@@ -352,6 +358,7 @@ def main(idx: int) -> None:
 
     root = Path(dirs[idx])
     target = Target.from_dir(root)
+    print('Target:', target)
 
     global_csv = Path.cwd() / "all_final_candidates.csv"
     run_fit_refine_for_target(target, global_csv)

@@ -4,11 +4,16 @@ import os
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from core.target import Target, PipelineStage
 from stages.search_singles import singles_search, SinglesSearchConfig
 from utils.queue import enqueue
 
-TARGET_GLOB = "../toi_data/target_*"
+TARGET_GLOB = "./toi_data/target_*"
 
 
 def _has_merged_data(target: Target, flavour: str) -> bool:
@@ -41,18 +46,19 @@ def main(idx):
         return
 
 
-    cfg = SinglesSearchConfig(flavour=target.data_source.value, confidence=0.55, plot_events=False, verbose=False)
-
+    cfg = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.55, plot_events=False, verbose=False)
     # Optional: if you want consistent per-run artifacts, uncomment:
     run_id = t.new_run_id()
+
     run_path = t.candidates_run_path(run_id)
-    # singles_search(t, cfg=cfg, run_1=True, pass_label="pass1", run_id=run_id, run_path=run_path)
+
 
     # Otherwise (simpler): let singles_search manage its own run context
     planet_df, _ = singles_search(t, cfg=cfg, run_1=True, pass_label="pass1")
+    print('planet_df', planet_df)
 
-    # singles_search should have already set dt_prelim_found / quick_singles_t0
     found = bool(getattr(t, "dt_prelim_found", False))
+    print('found', found)
 
     # Mark quick singles done
     

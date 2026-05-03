@@ -46,7 +46,8 @@ def prepared_targets(tmp_workdir: Path):
       - target 1: RAW, no total CSV (should be skipped)
     """
     # target 0
-    t0_root = Path("target_tic-100_gaiaID-GAIA100"); t0_root.mkdir()
+    t0_root = tmp_workdir / "target_tic-100_gaiaID-GAIA100"
+    t0_root.mkdir(exist_ok=True)
     t0 = Target(ticid=100, gaia_id="GAIA100", root_dir=t0_root)
     t0.set_stage(PipelineStage.MERGED)
     # minimal catalog (optional)
@@ -55,7 +56,8 @@ def prepared_targets(tmp_workdir: Path):
     _make_synthetic_total_csv(t0_root, flavour="TGLC")
 
     # target 1 (not ready)
-    t1_root = Path("target_tic-101_gaiaID-GAIA101"); t1_root.mkdir()
+    t1_root = tmp_workdir / "target_tic-101_gaiaID-GAIA101"
+    t1_root.mkdir(exist_ok=True)
     t1 = Target(ticid=101, gaia_id="GAIA101", root_dir=t1_root)
     t1.save_state()
 
@@ -88,7 +90,7 @@ def test_runner_skips_when_not_ready(monkeypatch, prepared_targets, capsys):
     # Run index 1 (RAW + no total file)
     runner.main(1)
     out = capsys.readouterr().out
-    assert "Not ready (PipelineStage < MERGED and no *total.csv). Skipping." in out
+    assert "Not ready (no merged total CSV). Skipping." in out
 
 def test_runner_respects_slurm_array_env(monkeypatch, prepared_targets):
     runner = _load_runner_module()

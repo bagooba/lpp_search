@@ -53,7 +53,7 @@ def test_get_data_flattens_and_merges(tmp_workdir, stub_fits, stub_flatten, stub
     out = get_data(str(d), flux_type="APER_", PL="TGLC", verbose=False, catalog_df=catalog_df)
 
     # The merged total should exist
-    total_csv = d / "TIC123456789_TGLC_APER__total.csv"
+    total_csv = d / "TIC123456789_TGLC_APER_total.csv"
     assert total_csv.exists()
     assert isinstance(out, pd.DataFrame)
     # Basic columns present

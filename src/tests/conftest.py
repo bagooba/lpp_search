@@ -16,8 +16,12 @@ from enum import Enum, auto
 @pytest.fixture
 def tmp_workdir(tmp_path, monkeypatch):
     """A clean temp directory for each test."""
-    cwd = os.getcwd()
+    cwd = Path.cwd()
     os.chdir(tmp_path)
+    # Create scripts symlink for tests that need it (point to project root)
+    scripts_src = cwd / "scripts"
+    if scripts_src.exists() and not (tmp_path / "scripts").exists():
+        (tmp_path / "scripts").symlink_to(scripts_src)
     yield tmp_path
     os.chdir(cwd)
 
@@ -71,12 +75,10 @@ def stub_T14(monkeypatch):
 def stub_flatten(monkeypatch):
     """Stub flatten with simple median trend."""
     from stages import dataprep
-
     def _flatten(time, flux, method=None, window_length=None, return_trend=True, **kwargs):
         trend = np.full_like(flux, np.nanmedian(flux))
         flat = flux / (trend + 1e-12)
         return (flat, trend) if return_trend else flat
-
     monkeypatch.setattr(dataprep, "flatten", _flatten, raising=True)
     return _flatten
 
@@ -85,22 +87,15 @@ def stub_flatten(monkeypatch):
 def stub_fits(monkeypatch):
     """Stub astropy.io.fits.open."""
     from astropy.io import fits as apf
-
     class MockHDUList:
         def __iter__(self):
             t = apf.BinTableHDU()
             t.header["EXTNAME"] = ("TABLE", "extension name")
-            t.data = np.array([(1.0, 10.0, 1.0e-4, 1.0e-5, 0.1e-4, 0.9e-4)], dtype=[("TIME", "f8"), ("MJD", "f8"), ("FLUX", "f8"), ("BKG_FLUX", "f8"), ("FLUX_ERR", "f8"), ("FLUX_TREND", "f8")])
-            self.table = t
-            yield self.table
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-
-    def _mock_open(path):
-        return MockHDUList()
-
+            t.data = np.array([(1.0, 10.0, 1.0e-4, 1.0e-5, 0.1e-4, 0.9e-4)], dtype=[("TIME","f8"),("MJD","f8"),("FLUX","f8"),("BKG_FLUX","f8"),("FLUX_ERR","f8"),("FLUX_TREND","f8")])
+            yield t
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    def _mock_open(path): return MockHDUList()
     monkeypatch.setattr("astropy.io.fits.open", _mock_open)
 
 
@@ -114,66 +109,52 @@ def TinyTarget(monkeypatch, tmp_path):
         FIT = auto()
         REFINE = auto()
         FINISHED = auto()
-
     class TinyTarget:
         def __init__(self, ticid, root_dir):
             self.ticid = ticid
             self.root_dir = root_dir
             self.stage = FakeStage.RAW
+            self.pipeline_stage = FakeStage.RAW
             self._catalog = {}
-            self.catalog = {}
             self.source_fits = []
             self.dt_prelim_found = False
-
-        def save_state(self):
-            pass
-
-        def load_state(self):
-            pass
-
+        def save_state(self): pass
+        def load_state(self): pass
         def set_stage(self, stage):
-            self.stage = stage
-
+            from stages.dataprep import PipelineStage
+            if isinstance(stage, PipelineStage):
+                self.pipeline_stage = stage
+                self.stage = FakeStage(stage.value)
+            else:
+                self.pipeline_stage = FakeStage(stage.value)
+                self.stage = stage
         def stage_at_least(self, stage):
             stages = [e.name for e in FakeStage]
             return stages.index(self.stage.name) >= stages.index(stage.name)
-
-        def _compute_rho_star_if_possible(self):
-            pass
-
+        def catalog(self) -> dict:
+            return dict(self._catalog)
+        def _compute_rho_star_if_possible(self): pass
         def get_catalog_info(self, ticid, return_df=False):
             if return_df:
                 return pd.DataFrame({"Mass": [0.45], "Rad": [0.48]})
             return {}
-
         @property
         def candidates_run_id(self):
             return f"run_{self.ticid}"
-
         def discover_ids_from_dirname(cls, dir_path):
             return (int(dir_path.stem.split("-")[1]), "TGLC")
-
         def new_run_id(self):
             self._run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             return self._run_id
-
         def candidates_dir(self):
             return self.root_dir
-
         def candidates_run_path(self, run_id):
             return self.root_dir / f"candidates_{run_id}.json"
-
-        def save_candidates(self, run_id, candidates):
-            pass
-
+        def save_candidates(self, run_id, candidates): pass
         def load_candidates(self, path=None):
             return []
-
         def stage_rank(self):
             stages = ["RAW", "SEARCHED", "DT_PRELIM", "FIT", "REFINE", "FINISHED"]
             return stages.index(self.stage.name)
-
-        def __post_init__(self):
-            pass
-
+        def __post_init__(self): pass
     return TinyTarget

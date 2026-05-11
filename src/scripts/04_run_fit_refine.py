@@ -33,7 +33,7 @@ from utils.queue import enqueue
 from stages.search_singles import singles_search, SinglesSearchConfig
 from engines.pyMC_core import pymc_fit_candidate
 
-TARGET_GLOB = "./toi_data/target_*"   # adjust
+TARGET_GLOB = "../../toi_data/target_*"   # adjust
 
 
 # ---------------------------
@@ -335,10 +335,14 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             mark_single_members_consumed(single_candidates, member_idx, pc.candidate_id())
 
 
-    alias_dedup_periodic_candidates(periodic_candidates + promoted_periodic_candidates)
+
+    deduped = alias_dedup_periodic_candidates(periodic_candidates + promoted_periodic_candidates)
+    for c in deduped:
+        if getattr(c, "ptype", None) == "Periodic":
+            print(c.candidate_id(), c.period_days, getattr(c, "default", True), c.notes)
 
     # 6) Write outputs (no PDFs)
-    final_candidates = periodic_candidates + promoted_periodic_candidates + single_candidates 
+    final_candidates = deduped + single_candidates 
 
     per_target_csv = write_final_candidates_csv(target, final_candidates)
     append_global_candidates_csv(final_candidates, target, global_csv_path)

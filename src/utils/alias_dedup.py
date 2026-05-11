@@ -226,28 +226,54 @@ def alias_dedup_periodic_candidates(
                 continue  # if we had lists, we don't need alias fallback
 
             # 2) Fallback: harmonic period relation + ephemeris-phase check + depth consistency
-            Pa, Pb = _period(a), _period(b)
             if not _depth_consistent(a, b, ratio_max=depth_ratio_max):
                 continue
 
-            relP = abs(Pa - Pb) / min(Pa, Pb)
-            if relP > 0.01:   # or whatever you want (1% is consistent with earlier rel_merge style)
+            Pa, Pb = _period(a), _period(b)
+            if Pa is None or Pb is None:
                 continue
-            
-            Pref = min(Pa, Pb)
-            # phase tolerance uses duration if available
+
+            # stable ordering (also keep the matching t0s aligned with short/long)
+            if Pa <= Pb:
+                Pshort, Plong = Pa, Pb
+                t0short, t0long = _t0(a), _t0(b)
+            else:
+                Pshort, Plong = Pb, Pa
+                t0short, t0long = _t0(b), _t0(a)
+
+            ratio = Plong / Pshort
+
+            # look for small rational ratios up to 5 (tune if needed)
+            is_alias = False
+            for zz in range(1, 6):
+                for yy in range(1, 6):
+                    r = zz / yy
+                    if abs(ratio - r) <= 0.01:   # 1% tolerance
+                        is_alias = True
+                        break
+                if is_alias:
+                    break
+
+            if not is_alias:
+                continue
+
+            # define tol (duration-based if available, otherwise floor)
             dura = _median(a, "dur", getattr(a, "duration_days", None))
             durb = _median(b, "dur", getattr(b, "duration_days", None))
             dur_ref = None
             for d in (dura, durb):
                 if d is not None and np.isfinite(d):
                     dur_ref = float(d) if dur_ref is None else min(dur_ref, float(d))
-            tol = max(epoch_tol_floor_days, epoch_tol_scale * (dur_ref if dur_ref is not None else epoch_tol_floor_days))
-            off = _phase_offset_days(_t0(a), _t0(b), Pref)
-            if off <= tol:
-                union(i, j)
 
-    # build groups
+            tol = max(
+                epoch_tol_floor_days,
+                epoch_tol_scale * (dur_ref if dur_ref is not None else epoch_tol_floor_days),
+            )
+
+            # phase alignment for aliases: long epoch should land on the short ephemeris
+            off = _phase_offset_days(t0long, t0short, Pshort)
+            if off <= tol:
+                union(i, j)    # build groups
     groups = {}
     for i in range(n):
         r = find(i)

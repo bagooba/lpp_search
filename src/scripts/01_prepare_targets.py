@@ -4,7 +4,7 @@ from pathlib import Path
 import glob
 import time as tm
 import pandas as pd
-
+import sys
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -18,7 +18,9 @@ from utils.queue import enqueue
 
 
 def prepare_one_target(target_dir: Path) -> None:
+    print(f'target dir {target_dir}')
     ticid, gaia_id = Target.discover_ids_from_dirname(target_dir)
+    print(f'ticid {ticid}')
     dummy = pd.Series(dtype=object)
     t = Target(ticid=ticid, gaia_id=gaia_id, root_dir=target_dir, catalog_row=dummy)
     t.load_state()  # safe if re-running
@@ -32,12 +34,14 @@ def prepare_one_target(target_dir: Path) -> None:
 
 if __name__ == "__main__":
     t0 = tm.time()
-    target_dirs = sorted(glob.glob("../toi_data/target_*"))  # adjust your path
-    print("num files", len(target_dirs))
+    target_dirs = sorted(glob.glob("../../toi_data/target_*"))  # adjust your path
+    print(f'target_dirs {target_dirs}')
     for td in target_dirs:
         try:
             prepare_one_target(Path(td))
         except Exception as e:
             print(f"[WARN] {td}: {e}")
     t1 = tm.time()
+    print("num files", len(target_dirs))
+
     print("time it took:", (t1 - t0)/60, "minutes")

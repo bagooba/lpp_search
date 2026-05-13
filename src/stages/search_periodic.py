@@ -30,6 +30,8 @@ from utils.find_total_csv import find_total_csv
 from utils.running_median import running_median
 from utils.run_json import upsert_run_json
 from utils.segments import breaking_up_data
+from utils.handling_data import normalize_depth_to_fractional
+from utils.ephemerides import phase_fold, transit_mask, _nearest_epoch_time
 
 
 @dataclass
@@ -67,20 +69,6 @@ class PeriodicSearchConfig:
 
     df_unc = 1E-4
 
-def transit_mask(time: np.ndarray, period: float, duration: float, t0: float, buffer: float) -> np.ndarray:
-    """
-    Full-length transit mask (days). Mirrors your legacy modulo-based mask.
-    """
-    t = np.asarray(time, dtype=float)
-    P = float(period)
-    return np.abs((t - t0 + 0.5 * P) % P - 0.5 * P) < (duration + buffer)
-
-
-
-def _nearest_epoch_time(t: float, t0: float, P: float) -> float:
-    """Nearest transit center predicted by (t0, P) to time t."""
-    n = int(np.rint((t - t0) / P))
-    return t0 + n * P
 
 
 def _offset_to_ephemeris(t: float, t0: float, P: float) -> float:
@@ -134,22 +122,6 @@ def seed_period_grid(P0, window_frac, ngrid):
     lo = P0 * (1.0 - window_frac)
     hi = P0 * (1.0 + window_frac)
     return np.linspace(lo, hi, int(ngrid))
-
-
-def normalize_depth_to_fractional(depth_val):
-    """
-    Force depth into (0, 0.5] as a positive fractional transit depth.
-    If something arrives as ~0.997 (i.e., flux level), convert to ~0.003.
-    """
-    if depth_val is None:
-        return None
-    d = float(depth_val)
-    if not np.isfinite(d):
-        return None
-    d = abs(d)  # guard against negative sign conventions
-    if d > 0.5:
-        d = 1.0 - d
-    return d
 
 
 def checking_last_BLS_power_for_artificial_inflation(power_results):

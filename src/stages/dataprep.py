@@ -12,6 +12,7 @@ from astropy.io import fits as apf
 from astropy.stats import sigma_clip
 from astropy import units
 from wotan import flatten
+import shutil
 
 from core.target import Target, PipelineStage, DataSource
 import utils.config as con
@@ -75,6 +76,8 @@ def extract_data_from_fits_files(fitsFile, PL="", sector=0):
         tb = next(h for h in hdulist if 'Table' in str(h))
         data = tb.data
         cols = [c.name.upper() for c in tb.columns]
+
+
     df = pd.DataFrame({'TIME': data['TIME']})
     if PL: PL = PL.upper() + '_'
     flux_cols = sorted([c for c in cols if 'FLUX' in c and (not c.startswith(('CAL','K')) or 'X_' in c)], key=len)
@@ -104,46 +107,94 @@ def extract_data_from_fits_files(fitsFile, PL="", sector=0):
             df[out + '_ERR'] = data[err]
     outdir = os.path.dirname(fitsFile); os.makedirs(outdir, exist_ok=True)
     outname = f"{outdir}/{PL}{os.path.basename(outdir)}_sector{int(sector):02d}.csv"
+
+
+    # after you open fitsFile and before return:
+    
+    pix_dir = Path(outdir) / "pixels" / "TGLC"
+    pix_dir.mkdir(parents=True, exist_ok=True)
+
+    src = Path(fitsFile)
+
+    # Name it deterministically: sector + original basename
+    dst = pix_dir / f"sector{int(sector):02d}_{src.name}"
+
+    if not dst.exists():
+        shutil.copy2(src, dst)
+
+
     df.to_csv(outname, index=False)
     return df  
 
 def get_data(ticid_directory, flux_type="APER_", PL="TGLC", verbose=False, catalog_df=False):
     files = sorted(glob.glob(f"{ticid_directory}/*_sector*.csv"))
     all_t, all_f, all_fe, all_flat, all_flat_fe, all_trend = [], [], [], [], [], []
+
+    all_bkg, all_cx, all_cy, all_q = [], [], [], []
     for fil in files:
         df = pd.read_csv(fil)
         flux_col = flux_type + "FLUX" if flux_type + "FLUX" in df.columns else "FLUX"
-        if 'QUALITY' in df: df = df[df['QUALITY'] == 0]
-        df = df[~np.isnan(df[flux_col])]
+        if 'QUALITY' in df.columns: df = df[df['QUALITY'] == 0]
+
+        df = df[pd.notna(df[flux_col])]
+        
         if df.empty: continue
         med = np.nanmedian(df[flux_col])
         ferr = (df[flux_col + '_ERR'] / med) if (flux_col + '_ERR') in df else np.full(len(df), np.std(df[flux_col] / med))
         df[flux_col] /= med
         time, flux = df.TIME.to_numpy(), df[flux_col].to_numpy()
         mask = ~remove_outliers(time, flux)
-        t, f, fe = time[mask], flux[mask], ferr[mask]
+        df2 = df.iloc[mask].copy()
+
+        t, f, fe = df2['TIME'].to_numpy(), df2[flux_col].to_numpy(), np.array(ferr)[mask]
         flat, trend = (flatten_lc(t, f) if isinstance(catalog_df, bool) else flatten_lc(t, f, catalog_df=catalog_df))
         flat_err = np.full(len(flat), np.std(flat))
-        df2 = df.iloc[mask].copy()
+
         df2[flux_col + '_FLAT'] = flat
         df2[flux_col + '_FLAT_ERR'] = flat_err
         df2[flux_col + '_TREND'] = trend
+
         df2.to_csv(fil[:-4] + '_flat.csv', index=False)
+
+        if "BKG_FLUX" in df2.columns:
+            all_bkg.extend(df2["BKG_FLUX"].to_numpy())
+        else:
+            all_bkg.extend([np.nan] * len(df2))
+
+        if "CENTROID_X" in df2.columns:
+            all_cx.extend(df2["CENTROID_X"].to_numpy())
+        else:
+            all_cx.extend([np.nan] * len(df2))
+
+        if "CENTROID_Y" in df2.columns:
+            all_cy.extend(df2["CENTROID_Y"].to_numpy())
+        else:
+            all_cy.extend([np.nan] * len(df2))
+
+        if "QUALITY" in df2.columns:
+            all_q.extend(df2["QUALITY"].to_numpy())
+        else:
+            all_q.extend([np.nan] * len(df2))
         if verbose:
             plt.figure(figsize=(20,5)); plt.scatter(time, flux, s=3); plt.plot(t, trend, 'k')
             plt.figure(figsize=(20,5)); plt.scatter(t, flat, s=3); plt.show()
-        all_t.extend(t); all_f.extend(f); all_fe.extend(fe)
+        all_t.extend(t); all_f.extend(f); all_fe.extend(fe);
         all_flat.extend(flat); all_flat_fe.extend(flat_err); all_trend.extend(trend)
     if not all_t:
         return
     idx = np.argsort(all_t)
+
     out = pd.DataFrame({
-        'TIME': np.array(all_t)[idx],
-        'RAW_FLUX': np.array(all_f)[idx],
-        'RAW_FLUX_ERR': np.array(all_fe)[idx],
-        'FLUX': np.array(all_flat)[idx],
-        'FLUX_ERR': np.array(all_flat_fe)[idx],
-        'FLUX_TREND': np.array(all_trend)[idx]
+        "TIME": np.array(all_t)[idx],
+        "RAW_FLUX": np.array(all_f)[idx],
+        "RAW_FLUX_ERR": np.array(all_fe)[idx],
+        "FLUX": np.array(all_flat)[idx],
+        "FLUX_ERR": np.array(all_flat_fe)[idx],
+        "FLUX_TREND": np.array(all_trend)[idx],
+        "BKG_FLUX": np.array(all_bkg)[idx],
+        "CENTROID_X": np.array(all_cx)[idx],
+        "CENTROID_Y": np.array(all_cy)[idx],
+        "QUALITY": np.array(all_q)[idx],
     })
     outname = f"{ticid_directory}/{os.path.basename(ticid_directory)}_{PL}_{flux_type}total.csv"
     out.to_csv(outname, index=False)

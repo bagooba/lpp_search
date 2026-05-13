@@ -39,6 +39,11 @@ class PlanetCandidate:
     duration_days: Optional[float] = None
     depth: Optional[float] = None
 
+    
+    rp_rs: Optional[float] = None
+    cosi: Optional[float] = None
+    a_smaj: Optional[float] = None
+
     snr: Optional[float] = None
     sde: Optional[float] = None
     n_transits_obs: Optional[int] = None
@@ -127,6 +132,10 @@ class PlanetCandidate:
             "period_days": None if self.period_days is None else float(self.period_days),
             "duration_days": None if self.duration_days is None else float(self.duration_days),
             "depth": None if self.depth is None else float(self.depth),
+            "rp_rs": None if self.rp_rs is None else float(self.rp_rs),
+            "cosi": None if self.cosi is None else float(self.cosi),
+            "a_smaj": None if self.a_smaj is None else float(self.a_smaj),
+
             "snr": None if self.snr is None else float(self.snr),
             "sde": None if self.sde is None else float(self.sde),
             "n_transits_obs": None if self.n_transits_obs is None else int(self.n_transits_obs),
@@ -147,6 +156,9 @@ class PlanetCandidate:
             period_days=(None if d.get("period_days") is None else float(d["period_days"])),
             duration_days=(None if d.get("duration_days") is None else float(d["duration_days"])),
             depth=(None if d.get("depth") is None else float(d["depth"])),
+            rp_rs=(None if d.get("rp_rs") is None else float(d["rp_rs"])),
+            cosi=(None if d.get("cosi") is None else float(d["cosi"])),
+            a_smaj=(None if d.get("a_smaj") is None else float(d["a_smaj"])),
             snr=(None if d.get("snr") is None else float(d["snr"])),
             sde=(None if d.get("sde") is None else float(d["sde"])),
             n_transits_obs=(None if d.get("n_transits_obs") is None else int(d["n_transits_obs"])),
@@ -161,17 +173,17 @@ class PlanetCandidate:
 
         from core.planet_candidate import PlanetCandidate
 
-    def single_candidates_from_dt_events(events, *, source="DT"):
-        out = []
-        for e in events:
-            out.append(PlanetCandidate(
-                ptype="Single",
-                t0_days=float(e.t0_days),
-                period_days=None,
-                duration_days=float(e.duration_days),
-                depth=float(e.depth),
-                snr=None if e.snr is None else float(e.snr),
-                source=source,
-                fit_is_current=False,
-            ))
-        return out
+def single_candidates_from_dt_events(events, *, source="DT"):
+    out = []
+    for e in events:
+        out.append(PlanetCandidate(
+            ptype="Single",
+            t0_days=float(e.t0_days),
+            period_days=None,
+            duration_days=float(e.duration_days),
+            depth=float(e.depth),
+            snr=None if e.snr is None else float(e.snr),
+            source=source,
+            fit_is_current=False,
+        ))
+    return out

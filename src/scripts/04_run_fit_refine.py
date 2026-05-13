@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
+import numpy as np
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,6 +31,7 @@ from utils.alias_dedup import alias_dedup_periodic_candidates
 from utils.queue import enqueue
 
 from stages.search_singles import singles_search, SinglesSearchConfig
+from utils.handling_data import normalize_depth_to_fractional
 from engines.pyMC_core import pymc_fit_candidate
 
 TARGET_GLOB = "../../toi_data/target_*"   # adjust
@@ -56,9 +57,14 @@ def write_final_candidates_csv(target: Target, candidates: list[PlanetCandidate]
             "period_days": c.period_days,
             "duration_days": c.duration_days,
             "depth": c.depth,
+
+            "rp_rs": getattr(c, "rp_rs", None),
+            "cosi": getattr(c, "cosi", None),
+            "a_smaj": getattr(c, "a_smaj", None),
             "n_transits_obs": c.n_transits_obs,
             "fit_is_current": c.fit_is_current,
             "source": c.source,
+            "default": c.default,
             "notes": c.notes,
             # store the full summary stats as JSON text so you keep *everything*
             "pymc_summary_json": json.dumps(c.pymc_summary) if c.pymc_summary else "",
@@ -66,6 +72,48 @@ def write_final_candidates_csv(target: Target, candidates: list[PlanetCandidate]
 
     pd.DataFrame(rows).to_csv(out_path, index=False)
     return out_path
+
+def _epochs_in_window(tmin, tmax, t0, P):
+    # predict epochs in [tmin, tmax]
+    k0 = int(np.floor((tmin - t0) / P)) - 1
+    k1 = int(np.ceil((tmax - t0) / P)) + 1
+    ks = np.arange(k0, k1 + 1)
+    return t0 + ks * P
+
+# def consume_singles_under_periodics(final_candidates, time_min, time_max, fixed_tol_days=0.05):
+#     periodics = [c for c in final_candidates if c.ptype == "Periodic" and c.fit_is_current]
+#     singles   = [c for c in final_candidates if c.ptype == "Single"]
+
+#     for s in singles:
+#         if s.t0_days is None:
+#             continue
+#         s_t0 = float(s.t0_days)
+#         best = None
+
+#         for p in periodics:
+#             if p.period_days is None or p.t0_days is None:
+#                 continue
+#             P = float(p.period_days); t0 = float(p.t0_days)
+#             if not np.isfinite(P) or P <= 0:
+#                 continue
+
+#             epochs = _epochs_in_window(time_min, time_max, t0, P)
+#             # tolerance = max(0.25 * dur, fixed)
+#             dur = float(p.duration_days) if p.duration_days is not None else np.nan
+#             tol = max(fixed_tol_days, 0.25 * dur) if np.isfinite(dur) else fixed_tol_days
+
+#             if np.min(np.abs(epochs - s_t0)) <= tol:
+#                 best = p
+#                 break
+
+#         if best is not None:
+#             # mark consumed (don’t delete)
+#             s.default = False
+#             s.notes = (s.notes + f" consumed_by={best.candidate_id()};").strip()
+#             # optionally add attribute for CSV
+#             setattr(s, "consumed_by", best.candidate_id())
+
+#     return final_candidates
 
 def append_global_candidates_csv(candidates: list[PlanetCandidate], target: Target, global_path: Path) -> None:
     # NOTE: if you run this in parallel across many targets, concurrent appends can collide.
@@ -81,9 +129,13 @@ def append_global_candidates_csv(candidates: list[PlanetCandidate], target: Targ
             "period_days": c.period_days,
             "duration_days": c.duration_days,
             "depth": c.depth,
+            "rp_rs": getattr(c, "rp_rs", None),
+            "cosi": getattr(c, "cosi", None),
+            "a_smaj": getattr(c, "a_smaj", None),
             "n_transits_obs": c.n_transits_obs,
             "fit_is_current": c.fit_is_current,
             "source": c.source,
+            "default": c.default,
             "notes": c.notes,
             "pymc_summary_json": json.dumps(c.pymc_summary) if c.pymc_summary else "",
         })
@@ -114,7 +166,13 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
         if cand.ptype == "Periodic":
             cand.period_days = _summary_median(cand, "Per", fallback=cand.period_days)
         cand.duration_days = _summary_median(cand, "dur", fallback=cand.duration_days)
-        cand.depth = _summary_median(cand, "depth", fallback=cand.depth)    
+
+        raw_depth = _summary_median(cand, "depth", fallback=cand.depth)
+        cand.depth = normalize_depth_to_fractional(raw_depth)
+        cand.rp_rs = _summary_median(cand, "rp_rs", fallback=None)    
+        cand.cosi = _summary_median(cand, "cosi", fallback=None)    
+        cand.a_smaj = _summary_median(cand, "a", fallback=None)    
+
     else:
         cand.fit_is_current = False
 
@@ -148,7 +206,7 @@ def finalize_pass1_singles_only(target, run_path, run_json, global_csv_path):
             t0_days=float(ev.t0_days),
             period_days=None,
             duration_days=float(ev.duration_days),
-            depth=float(ev.depth),
+            depth=normalize_depth_to_fractional(ev.depth),
             source="DT_pass1",
         )
         fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
@@ -261,7 +319,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             t0_days=float(ev.t0_days),
             period_days=float(ev.period_days),
             duration_days=float(ev.duration_days) if ev.duration_days is not None else None,
-            depth=float(ev.depth) if ev.depth is not None else None,
+            depth=normalize_depth_to_fractional(ev.depth) if ev.depth is not None else None,
             n_transits_obs=ev.n_transits_obs,
             transit_times_days = ev.transit_times_days,
             source="BLS",
@@ -280,6 +338,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     # 3) DT pass-2 (residual) ONLY if we actually masked something
 
     pass2_events = []
+
 
     if have_mask:
         singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
@@ -306,7 +365,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             t0_days=float(ev.t0_days),
             period_days=None,
             duration_days=float(ev.duration_days),
-            depth=float(ev.depth),
+            depth=normalize_depth_to_fractional(ev.depth),
             snr=None if ev.snr is None else float(ev.snr),
             source="DT_pass2",
             transit_times_days=[float(ev.t0_days)]
@@ -329,6 +388,8 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     promoted_periodic_candidates = []
     for pc, member_idx in promotions:
         ok = fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
+        pc.depth = normalize_depth_to_fractional(pc.depth)
+
         if ok:
             promoted_periodic_candidates.append(pc)
             # ONLY consume singles if periodic fit succeeds
@@ -344,6 +405,14 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
     # 6) Write outputs (no PDFs)
     final_candidates = deduped + single_candidates 
 
+    
+
+    time_min = float(time.min())
+    time_max = float(time.max())
+    # final_candidates = consume_singles_under_periodics(final_candidates, time_min, time_max)
+
+    # final_defaults = [c for c in final_candidates if c.default == True and c.fit_is_current]
+ 
     per_target_csv = write_final_candidates_csv(target, final_candidates)
     append_global_candidates_csv(final_candidates, target, global_csv_path)
 

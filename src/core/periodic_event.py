@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from utils.handling_data import normalize_depth_to_fractional
 
 
 @dataclass
@@ -48,7 +49,7 @@ class PeriodicEvent:
             period_days=float(d["period_days"]),
             t0_days=float(d["t0_days"]),
             duration_days=None if d.get("duration_days") is None else float(d["duration_days"]),
-            depth=None if d.get("depth") is None else float(d["depth"]),
+            depth=None if d.get("depth") is None else normalize_depth_to_fractional(d["depth"]),
             snr=None if d.get("snr") is None else float(d["snr"]),
             sde=None if d.get("sde") is None else float(d["sde"]),
             n_transits_obs=None if d.get("n_transits_obs") is None else int(d["n_transits_obs"]),

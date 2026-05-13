@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from utils.handling_data import normalize_depth_to_fractional
 
 
 @dataclass
@@ -34,7 +35,7 @@ class TransitEvent:
         return cls(
             t0_days=float(d["t0_days"]),
             duration_days=float(d["duration_days"]),
-            depth=float(d["depth"]),
+            depth=normalize_depth_to_fractional(d["depth"]),
             snr=None if d.get("snr") is None else float(d["snr"]),
             confidence=None if d.get("confidence") is None else float(d["confidence"]),
         )

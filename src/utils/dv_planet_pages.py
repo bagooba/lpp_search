@@ -172,10 +172,10 @@ def creating_single_transit_figure(time, flux, err, cand: PlanetCandidate, ax, p
 
     return ax
 
-def build_centroid_plots(centrx, centry, time, t_lims_lst, ax_vals):
-    for iii, lims in enumerate(t_lims_lst):
-        mask = np.where(lims[0]<= time <=lims[1])
-        ax_vals[iii].scatter(centrx[mask], centry[mask])
+# def build_centroid_plots(centrx, centry, time, t_lims_lst, ax_vals):
+#     for iii, lims in enumerate(t_lims_lst):
+#         mask = np.where(lims[0]<= time <=lims[1])
+#         ax_vals[iii].scatter(centrx[mask], centry[mask])
 
 
 

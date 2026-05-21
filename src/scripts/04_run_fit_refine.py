@@ -206,6 +206,8 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
     if ok and summary_df is not None:
         cand.pymc_summary = summary_df.to_dict()
         cand.mark_fitted()
+        print('summary')
+        print(summary_df)
 
         # Update working hypothesis from PyMC medians
         cand.t0_days = _summary_median(cand, "t0", fallback=cand.t0_days)
@@ -217,7 +219,7 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
         cand.depth = normalize_depth_to_fractional(raw_depth)
         cand.rp_rs = _summary_median(cand, "rp_rs", fallback=None)    
         cand.cosi = _summary_median(cand, "cosi", fallback=None)    
-        cand.a_smaj = _summary_median(cand, "a", fallback=None)    
+        cand.a_smaj = _summary_median(cand, "a_rs", fallback=None)    
 
     else:
         cand.fit_is_current = False

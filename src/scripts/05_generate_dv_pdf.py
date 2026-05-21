@@ -22,7 +22,7 @@ from pathlib import Path
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 
-def write_figures_to_pdf(figures, out_path, *, close=True, metadata=None):
+def write_figures_to_pdf(figures, data_path, *, close=True, metadata=None):
     """
     Write an iterable of matplotlib Figure objects to a single PDF.
 
@@ -37,6 +37,11 @@ def write_figures_to_pdf(figures, out_path, *, close=True, metadata=None):
     metadata : dict | None
         Optional PDF metadata, e.g. {"Title": "...", "Author": "..."}.
     """
+
+    target = str(data_path).split('/')[-1]
+
+
+    out_path = '../../DV_reports/'+target+'.pdf'
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -78,11 +83,12 @@ def run_for_target(target: Target) -> Path:
     intransit = []  # later: load from run json or recompute from fitted periodic candidates
 
     # 6) generate the PDF
-    out = creating_first_DV_report_page(
+    fig1 = creating_first_DV_report_page(
         target,
         planet_df=planet_df,
         intransit=intransit,
     )
+    out = write_figures_to_pdf([fig1], target.root_dir)
     return out
 
 

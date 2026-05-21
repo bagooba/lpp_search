@@ -125,30 +125,24 @@ def build_planet_df_from_final_csv(final_csv: Path) -> pd.DataFrame:
 
 # ---- Adapter: build catalog “row-like” object the report expects ----
 
-def format_candidate_table(planet_df, max_rows=10):
-    df = planet_df.copy()
-    if "default" in df.columns:
-        df = df[df["default"] == True]
-    df = df.reset_index(drop=True)
 
-    lines = []
-    lines.append("Candidates (default=True)  #  T    P[d]     t0[TJD]   depth[ppt]  Dur[h]")
-    for _, r in df.head(max_rows).iterrows():
-        num = int(r["Planet_Num"])
-        typ = "P" if r["Ptype"] == "Period" else "S"
-        P = float(r["Period"])
-        Pstr = f"{P:7.4f}" if np.isfinite(P) else "   —   "
-        t0 = float(r["T0"])
-        d = float(r["Depth"])
-        d_ppt = d * 1e3 if np.isfinite(d) else np.nan
-        dstr = f"{d_ppt:8.1f}" if np.isfinite(d_ppt) else "   —    "
-        dur = float(r["Dur"])
-        durstr = f"{dur:6.2f}" if np.isfinite(dur) else "  —  "
-        lines.append(f"{num:2d}  {typ}  {Pstr}  {t0:9.4f}   {dstr}   {durstr}")
+def format_candidate_table(planet_df, ax, max_rows = 10):
+    planet_df['Depth'] = planet_df['Depth']*1000
+    df_rounded = planet_df.round(4)
+    columns = ["#", "Type", "Period [d]", 't0 [TJD]', 'depth [ppt]', 'duration [h]']
 
-    if len(df) > max_rows:
-        lines.append(f"... ({len(df) - max_rows} more not shown)")
-    return "\n".join(lines)
+    table_data = df_rounded.iloc[:, :len(columns)].values.tolist()
+    # columns = df_rounded.columns.tolist()
+    # Create the table
+
+
+        
+    table = ax.table(cellText=table_data, colLabels=columns, loc='center')
+    # 2. Disable auto-font size and set the new size manually
+    # table.auto_set_font_size(False)
+    # table.set_fontsize(25)  # Change 14 to your desired size
+
+    return ax
 
 
 def bin_data_with_diff_cadences_many_args(total_time, min_cad = 0, **params):
@@ -314,7 +308,7 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
             intransit = np.zeros(len(time), dtype=bool)
 
     
-    catalog_df = build_catalog_df_for_target(target)
+    catalog_df = target._catalog
     try:
         u1 = float(catalog_df.aLSM)
         u2 = float(catalog_df.bLSM)
@@ -341,14 +335,12 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     print('length of different time arrays: ', diff_time_arrays)
     min_diff_time_arrays = min(diff_time_arrays)
     ratios = diff_time_arrays/min_diff_time_arrays
-
-    num_plots = 3
             
     fig0 = plt.figure(figsize=(8.5, 11),constrained_layout=True,dpi=100)
     gs = fig0.add_gridspec(1,2,width_ratios=[4.25, 1], wspace = 0.1) #create grid for subplots - makes it easier to assign where each plot goes
     
     
-    gs0 = gs[0].subgridspec(7, len(split_times), wspace=0.02, width_ratios = ratios)
+    gs0 = gs[0].subgridspec(5, len(split_times), wspace=0.02, width_ratios = ratios)
     gs1 = gs[1].subgridspec(1, 1)   
     ymin = np.nanmin([np.percentile(raw, 1),
                     np.percentile(flux, 0.5),
@@ -380,7 +372,8 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     delta_y2 = np.abs(ymax2-ymin2)
     ymin2 = ymin2-(delta_y2*.05) #make sure ymin allows for all data        
 
-    per_planets_df = planet_df[planet_df['Ptype']=='Period']
+    per_planets_df = planet_df[planet_df['Ptype']=='Periodic']
+    print('planet df', planet_df)
 
     if len(per_planets_df)>0:
         
@@ -397,9 +390,14 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
 
             for indx, planet in per_planets_df.iterrows():
 
-                if not _finite(planet.Rad_p, planet.Cosi, planet.Semi_Maj, u1, u2):
+                if not _finite(planet.Rad_p, u1, u2):
                     continue
+                elif not _finite(planet.Cosi, planet.Semi_Maj):
+                    planet.Cosi = 90
+                    planet.Semi_Maj = 10
                 model_time = np.arange(min_vals,max_vals,cad) #creates a uniformly spaced around spanning the length of time measurements taken in 30 minute intervals
+
+                print('getting model time', len(model_time ))
                 model_flux = predict_lc(model_time, planet.T0, planet.Period,
                                         planet.Rad_p, planet.Cosi, planet.Semi_Maj,
                                         u1, u2, cad)
@@ -480,8 +478,7 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
 
     ax_tbl = plt.subplot(gs0[subplot, :])  # span all columns for that row
     ax_tbl.axis("off")
-    txt = format_candidate_table(planet_df, max_rows=10)
-    ax_tbl.text(0.05, 0.95, txt, ha="left", va="top", fontsize=8, family="monospace")
+    ax_tbl = format_candidate_table(planet_df, ax_tbl, max_rows=10)
 
 #         if APER:
 #             subplot+=1
@@ -565,24 +562,23 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
                 ax.scatter(epochs, np.full(len(epochs) ,ymin_ + 0.1*delta_y), marker='^', color = 'C'+str(indx), s=50, zorder = 1000)
             else:
                 ax.scatter(epochs, np.full(len(epochs) ,ymin_ + 0.05*delta_y), marker='^', color = 'C'+str(indx), facecolors='none', s=30, zorder = 5000)
-    return fig0
 
 
                 
                 
                 
     ax_fin = plt.subplot(gs1[:,-1]) #for the last subplot, print text
-    txtstr = 'TICID='+ str(ticid)                              +'\n'\
-        +'RA='   + str(round(float(catalog_df.RA), 8))                   +'\n'\
-        +'DEC='  + str(round(float(catalog_df.DEC), 8))            +'\n'\
-        +'R_*='  + str(round(float(catalog_df.Rad), 5))         +'[R_s]'   +'\n'\
-        +'M_*='  + str(round(float(catalog_df.Mass), 5))        +'[M_s]'   +'\n'\
-        +'Teff=' + str(round(float(catalog_df.Teff), 2))     +'[K]'     +'\n'\
-        +'Tmag=' + str(round(float(catalog_df.Tmag), 3))                   +'\n'\
-        +'Vmag=' + str(round(float(catalog_df.Vmag), 3))                   +'\n'\
-        +'Jmag=' + str(round(float(catalog_df.Jmag), 3))                   +'\n'\
-        +'Cont=' + str(round(float(catalog_df.ContRatio), 3))                   +'\n'\
-        +'----- Planet Parmas -----'                              +'\n'\
+    txtstr = 'TICID'.strip().ljust(6)+ '='+str(ticid)                              +'\n'\
+        +'RA'.strip().ljust(6)   +'='.ljust(2)+ str(round(float(catalog_df['RA']), 6))          +'\n'\
+        +'DEC'.strip().ljust(6)  +'='.ljust(2)+ str(round(float(catalog_df['DEC']), 6))       +'\n'\
+        +'R_*'.strip().ljust(6)  +'='.ljust(2)+ str(round(float(catalog_df['Rad']), 3)).strip().ljust(5)    +'  [R_s]'   +'\n'\
+        +'M_*'.strip().ljust(6)  +'='.ljust(2)+ str(round(float(catalog_df['Mass']), 3)).strip().ljust(5)   +'  [M_s]'   +'\n'\
+        +'Teff'.strip().ljust(6) +'='.ljust(2)+ str(round(float(catalog_df['Teff']), 3)).strip().ljust(5)    +'  [K]'     +'\n'\
+        +'Tmag'.strip().ljust(6) +'='.ljust(2)+ str(round(float(catalog_df['Tmag']), 3)).strip().ljust(5)     +'\n'\
+        +'Vmag'.strip().ljust(6) +'='.ljust(2)+ str(round(float(catalog_df['Vmag']), 3)).strip().ljust(5)             +'\n'\
+        +'Jmag'.strip().ljust(6) +'='.ljust(2)+ str(round(float(catalog_df['Jmag']), 3)).strip().ljust(5)           +'\n'\
+        +'Cont'.strip().ljust(6) +'='.ljust(2)+ str(round(float(catalog_df['ContRatio']), 3))                   +'\n'\
+        # +'----- Planet Parmas -----'                              +'\n'\
     
     # for indx, planet in planet_df.iterrows():
     #     txtstr = txtstr + '--' +'Planet Num='+ str(int(planet.Planet_Num))+'--' +'\n'\
@@ -603,4 +599,5 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     plt.xticks([])
     plt.yticks([])
     plt.axis('off')
-    
+    return fig0
+

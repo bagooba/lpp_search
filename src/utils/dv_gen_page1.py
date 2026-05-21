@@ -201,12 +201,12 @@ def bin_data_with_diff_cadences_many_args(total_time, min_cad = 0, **params):
 def creating_broken_axes_plots_for_DV_report_min_plot(time, flux, err, binned_time, binned_flux, binned_err, gs=False, subplot_val = None, ratios = []):
     
 
-    if not err:
+    if len(np.array([err])) == 0 or err is None:
         err = np.full( len(flux), np.std(flux))
-    if not binned_err:
+    if len(np.array([binned_err])) == 0 or binned_err is None:
         binned_err = np.full(len(binned_flux), np.std(flux))
 
-    if len(ratios)==0:
+    if len(ratios)==0 or binned_err is None:
         diff_time_arrays = np.array([max(x)-min(x) for x in split_times])
         min_diff_time_arrays = min(diff_time_arrays)
         ratios = diff_time_arrays/min_diff_time_arrays
@@ -343,15 +343,7 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     ratios = diff_time_arrays/min_diff_time_arrays
 
     num_plots = 3
-    if eleanor:
-        num_plots+=1
-    if APER:
-        num_plots+=1
-        
-    if len(other_pipelines)>0:
-        num_plots+=len(other_pipelines)
-    
-    
+            
     fig0 = plt.figure(figsize=(8.5, 11),constrained_layout=True,dpi=100)
     gs = fig0.add_gridspec(1,2,width_ratios=[4.25, 1], wspace = 0.1) #create grid for subplots - makes it easier to assign where each plot goes
     
@@ -486,7 +478,7 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     subplot +=1
 
 
-    ax_tbl = plt.subplot(gs0[row_table, :])  # span all columns for that row
+    ax_tbl = plt.subplot(gs0[subplot, :])  # span all columns for that row
     ax_tbl.axis("off")
     txt = format_candidate_table(planet_df, max_rows=10)
     ax_tbl.text(0.05, 0.95, txt, ha="left", va="top", fontsize=8, family="monospace")
@@ -573,6 +565,8 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
                 ax.scatter(epochs, np.full(len(epochs) ,ymin_ + 0.1*delta_y), marker='^', color = 'C'+str(indx), s=50, zorder = 1000)
             else:
                 ax.scatter(epochs, np.full(len(epochs) ,ymin_ + 0.05*delta_y), marker='^', color = 'C'+str(indx), facecolors='none', s=30, zorder = 5000)
+    return fig0
+
 
                 
                 

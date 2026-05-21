@@ -47,7 +47,7 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
         raise ValueError("No free random variables found for sampling.")
 #     print('free vars', free_vars)
     # Use Metropolis for all free RVs
-#     step = pm.Metropolis(vars=free_vars)
+    # step = pm.Metropolis(vars=free_vars)
 
     step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
 
@@ -72,30 +72,37 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
     raise RuntimeError("Model did not converge after multiple attempts.")
 
 class BatmanOp(Op):
+
     itypes = [pt.dvector, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar]
     otypes = [pt.dvector]
+
+
+    def __init__(self, model, params):
+        self.model = model
+        self.params = params
 
     def make_node(self, *inputs):
         # Convert all inputs to tensors if they aren't already
         converted_inputs = [pt.as_tensor_variable(inp) for inp in inputs]
-        return Apply(self, converted_inputs, [o() for o in self.otypes])
+        return Apply(self, converted_inputs, [pt.dvector()])
+
 
     def perform(self, node, inputs, outputs):
         time, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad = inputs
-        params = batman.TransitParams()
+
+        params = self.params
+        model = self.model
 
         params.t0 = float(t0)
         params.per = float(per)
         params.rp = float(rp_rs)
         params.a = float(a_rs)
         params.inc = float(inc)
-        params.u = [float(u1), float(u2)]
         params.ecc = float(ecc)
-        params.w = 90.0
         params.u = [float(u1), float(u2)]
-        params.limb_dark = "quadratic"
-        m = batman.TransitModel(params, time, supersample_factor=4, exp_time=cad/24./60.)
-        outputs[0][0] = m.light_curve(params)
+
+        outputs[0][0] = model.light_curve(params)
+
 
     def grad(self, inputs, g_outputs):
         # For now, return zeros (no gradient)
@@ -148,6 +155,20 @@ def make_windows_from_time_stamps(t, gap_threshold=0.5):
     return np.column_stack((t[starts], t[ends]))
 
 
+def initialize_batman_params(params, t0, per, depth, ld_q):
+
+    params.t0 = t0
+    params.per = per
+    params.rp = np.sqrt(depth)
+    params.a = 10.0  # placeholder unless you have a better estimate
+    params.inc = 90.0
+    params.ecc = 0.0
+    params.w = 90.0
+    params.u = ld_q
+    params.limb_dark = "quadratic"
+
+    return params
+
 
 
 def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_ld_fixed=True):
@@ -162,6 +183,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
     type_fn = candidate.ptype
     T0 = float(candidate.t0_days)
     Depth = float(candidate.depth)
+    fold_this = False  # default for Single; may be updated in model setup
 
     # periodic requires a period
     Per_in = getattr(candidate, "period_days", None)
@@ -169,7 +191,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         if Per_in is None:
             raise ValueError("Periodic candidate missing period_days.")
         Per_in = float(Per_in)
-        
+
         
     # Always do data prep first so cad exists
     time, flux, unc, cad = prepare_fit_data(time, flux, unc, candidate)
@@ -181,7 +203,6 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
     # pTdur is your “window scale”. Keep your old convention unless you add a dedicated field later.
     pTdur = 1.5 * float(candidate.duration_days)
 
-    batman_op = BatmanOp()
 
     # count observed transits. Override from candidate if available.
     nobs_est = None
@@ -197,10 +218,47 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
                 tmp += int(max(0, k_high - k_low + 1))
             nobs_est = tmp
         nobs_est = int(nobs_est)
-
+    if nobs_est >= 3:
+        fold_this = True
     ecc = 0.0
 
-    fold_this = False  # default for Single; may be updated in model setup
+    batman_params = initialize_batman_params(batman.TransitParams(), T0, Per_in if type_fn == "Periodic" else np.ptp(time), Depth, [float(u1), float(u2)])
+
+    if fold_this:
+        folded_phase = ((time - T0 + 0.5 * Per_in) % Per_in) - (0.5 * Per_in)
+        sort_indx = np.argsort(folded_phase)
+
+        phase = folded_phase[sort_indx]
+        
+        # window = min(0.5, 3*pTdur + 0.1*Per_in)
+        window = min(0.5, 3*pTdur + 0.05*Per_in)
+
+        use_index = np.abs(phase) < window
+
+        dt_minutes_min = np.nanpercentile(np.diff(np.unique(np.sort(time))), 5) * 24.0 * 60.0
+        cad = float(np.clip(dt_minutes_min, 0.2, 60.0))
+
+
+
+        t_fit = phase[use_index] + T0
+        f_fit = flux[sort_indx][use_index]
+        u_fit = unc[sort_indx][use_index]
+    else:
+        t_fit = time
+        f_fit = flux
+        u_fit = unc
+
+
+        # p_flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, ...)
+
+
+    batman_model = batman.TransitModel(
+        batman_params,
+        t_fit,
+        supersample_factor=4,
+        exp_time=cad / 24.0 / 60.0,)
+
+    batman_op = BatmanOp(batman_model, batman_params)
 
     with pm.Model() as model:
         t0 = pm.Uniform("t0", lower=T0 - pTdur, upper=T0 + pTdur)
@@ -208,7 +266,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         if type_fn == "Single":
             # initial a/R* guess uses a period guess
             k = np.sqrt(Depth)
-            per1 = float(np.max(time) - np.min(time))
+            per1 = float(np.max(t_fit) - np.min(t_fit))
             per2 = float(((3*np.pi / con.G / rho_star)**0.5) * (pTdur/np.pi/(1+k))**1.5)
             Per_guess = max(per1, per2)
             if Per_guess < 10:
@@ -224,7 +282,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
             if nobs_est >= 3:
                 per = pm.Uniform("Per", lower=max(0.25, Per * 0.99), upper=Per * 1.01)
                 a_rs = pm.Uniform("a_rs", lower=1.0, upper=300.0)
-                fold_this = True
+                # fold_this = True
             else:
                 per = pm.TruncatedNormal("Per", mu=Per, sigma=max(0.1, 0.05 * Per),
                                          lower=max(0.25, Per * 0.80), upper=Per * 1.20)
@@ -248,23 +306,22 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         T_dur0 = per / ((a_rs + eps) * np.pi)
         tau = pm.Deterministic("tau", rp_rs * T_dur0 / root)
         dur = pm.Deterministic("dur", root * T_dur0 + tau)
-        win = pm.Deterministic("win", dur * 2.0)
 
         # masks
         if type_fn == "Periodic":
-            intran_mask = transit_mask_tensors(time, per, dur, t0, cad)
+            intran_mask = transit_mask_tensors(t_fit, per, dur, t0, cad)
         else:
-            intran_mask = pt.abs(time - t0) < (dur / 2.0)
+            intran_mask = pt.abs(t_fit - t0) < (dur / 2.0)
 
         outran_mask = pt.invert(intran_mask)
 
-        out_flux = flux * outran_mask
+        out_flux = f_fit * outran_mask
         count = pt.maximum(pt.sum(outran_mask), 1)
         mean_out = pt.sum(out_flux) / count
-        std_out = pt.sqrt(pt.sum(outran_mask * (flux - mean_out)**2) / count)
+        std_out = pt.sqrt(pt.sum(outran_mask * (f_fit - mean_out)**2) / count)
 
         N_tran = pt.sum(intran_mask)
-        uq = pt.ones_like(flux) * std_out
+        uq = pt.ones_like(f_fit) * std_out
         sigs = pt.switch(N_tran > 0, pt.mean(pt.where(intran_mask, uq, 0)), 1e6)
 
         SNR_val = pt.switch(pt.gt(N_tran, 0), pt.sqrt(N_tran) * depth / sigs, 0)
@@ -276,24 +333,33 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         norm = pm.Deterministic("norm", median_pytensor(out_flux))
 
         if fold_this:
-            print('phase folded')
-            folded_phase = ((time - T0 + 0.5 * Per_in) % Per_in) - (0.5 * Per_in)
-            sort_indx = np.argsort(folded_phase)
-            phase = folded_phase[sort_indx]
-            use_index = np.abs(phase) < min([0.5, 3*pTdur])
+            # folded_phase = ((time - T0 + 0.5 * Per_in) % Per_in) - (0.5 * Per_in)
+            # sort_indx = np.argsort(folded_phase)
 
-            dt_minutes_min = np.nanpercentile(np.diff(np.unique(np.sort(time))), 5) * 24.0 * 60.0
-            p_cad = float(np.clip(dt_minutes_min, 0.2, 60.0))
+            # phase = folded_phase[sort_indx]
+            
+            # window = min(0.5, 3*pTdur + 0.1*Per_in)
+            # use_index = np.abs(phase) < window
 
-            p_flux_model = batman_op(phase[use_index] + T0, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, p_cad)
-            pm.Normal("obs", mu=p_flux_model * norm, sigma=unc[sort_indx][use_index], observed=flux[sort_indx][use_index])
+            # dt_minutes_min = np.nanpercentile(np.diff(np.unique(np.sort(time))), 5) * 24.0 * 60.0
+            # p_cad = float(np.clip(dt_minutes_min, 0.2, 60.0))
+
+
+            # t_fit = phase[use_index] + T0
+            # f_fit = flux[use_index]
+            # u_fit = unc[use_index]
+            
+
+
+            p_flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
+            pm.Normal("obs", mu=p_flux_model * norm, sigma=u_fit,observed=f_fit)
         else:
-            flux_model = batman_op(time, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
-            pm.Normal("obs", mu=flux_model * norm, sigma=unc, observed=flux)
+            flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
+            pm.Normal("obs", mu=flux_model * norm, sigma=u_fit, observed=f_fit)
 
     with model:
         try:
-            trace, conv_attempt = sample_until_converged(model)
+            trace, conv_attempt = sample_until_converged(model, mp_context="fork")
             summary = extract_summary_dataframe(trace)
         except RuntimeError:
             return pd.DataFrame(columns=["mean","median","sd","hdi_16%","hdi_84%","r_hat"]), False, None

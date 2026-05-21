@@ -14,9 +14,46 @@ from core.target import Target
 from utils.find_total_csv import find_total_csv
 
 # Your DV plotting lives here (we'll add it next)
-from utils.dv_report import creating_first_DV_report_page,build_planet_df_from_final_csv, build_catalog_df_for_target
+from utils.dv_gen_page1 import creating_first_DV_report_page,build_planet_df_from_final_csv, build_catalog_df_for_target
 
-TARGET_GLOB = "./toi_data/target_*"   # match your other scripts’ pattern
+TARGET_GLOB = "../../toi_data/target_*"   # match your other scripts’ pattern
+
+from pathlib import Path
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.pyplot as plt
+
+def write_figures_to_pdf(figures, out_path, *, close=True, metadata=None):
+    """
+    Write an iterable of matplotlib Figure objects to a single PDF.
+
+    Parameters
+    ----------
+    figures : iterable
+        Iterable (list or generator) yielding matplotlib.figure.Figure objects.
+    out_path : str | Path
+        Output PDF filename.
+    close : bool
+        If True, plt.close(fig) after saving each page (recommended).
+    metadata : dict | None
+        Optional PDF metadata, e.g. {"Title": "...", "Author": "..."}.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with PdfPages(out_path) as pdf:
+        if metadata:
+            info = pdf.infodict()
+            for k, v in metadata.items():
+                info[str(k)] = str(v)
+
+        for fig in figures:
+            if fig is None:
+                continue
+            pdf.savefig(fig)   # writes current figure as a page
+            if close:
+                plt.close(fig)
+
+    return out_path
 
 
 def run_for_target(target: Target) -> Path:
@@ -35,20 +72,16 @@ def run_for_target(target: Target) -> Path:
     data_filename = find_total_csv(target.root_dir, flavour)
 
     # 4) build catalog_df (thin 1-row object with RA/DEC/Rad/Mass/Teff/etc)
-    catalog_df = build_catalog_df_for_target(target)
+    # catalog_df = build_catalog_df_for_target(target)
 
     # 5) build a mask if you have one; otherwise empty for now
     intransit = []  # later: load from run json or recompute from fitted periodic candidates
 
     # 6) generate the PDF
     out = creating_first_DV_report_page(
-        ticid=target.ticid,
-        data_filename=str(data_filename),
+        target,
         planet_df=planet_df,
-        catalog_df=catalog_df,
         intransit=intransit,
-        APER=False,
-        eleanor=False,
     )
     return out
 

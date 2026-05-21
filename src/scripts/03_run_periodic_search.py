@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import json
+import numpy as np
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -71,7 +72,15 @@ def main(idx):
 
     raw = run_json.get("dt_events_raw_pass1", [])
     dt_events = [TransitEvent.from_dict(d) for d in raw] if isinstance(raw, list) else []    
-    seed_periods = seed_periods_from_dt_events(dt_events, top_k=10, min_support=3)
+
+    windows = target.get_observation_windows()
+
+    seed_periods = seed_periods_from_dt_events(
+        dt_events,
+        windows=windows   # <-- add this
+    )
+    
+    print('seed periods check', seed_periods)
 
     upsert_run_json(run_path, {
         "seed_periods_days": seed_periods,
@@ -82,6 +91,11 @@ def main(idx):
     cfg = PeriodicSearchConfig(flavour=target.data_source.value)
     if len(seed_periods) > 0:
         cfg.use_seed_periods = True
+
+        seeds = [list(np.array([0.5, 1, 2])*P) for P in seed_periods]
+        seed_periods = [item for sublist in seeds for item in sublist]
+        print('all seeds:', seed_periods)
+
 
         periodic_events = periodic_search(
             target,

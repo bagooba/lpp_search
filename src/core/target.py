@@ -10,6 +10,8 @@ import pandas as pd
 
 from datetime import datetime
 from core.planet_candidate import PlanetCandidate
+from utils.segments import breaking_up_data
+
 
 class PipelineStage(Enum):
     RAW = auto()
@@ -47,7 +49,7 @@ class Target:
     # candidate run bookkeeping (pointers only; keep state small)
     last_run_id: Optional[str] = None
     last_candidates_run: Optional[str] = None
-
+    _obs_windows: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     def __post_init__(self):
         self.root_dir = Path(self.root_dir)
         print(f'root directory: {self.root_dir}')
@@ -258,3 +260,31 @@ class Target:
             PipelineStage.REPORTED: 5,
         }
         return order.get(self.pipeline_stage, -1) >= order.get(stage, 10)
+    
+    def get_observation_windows(self, break_val=0.5, min_size=1.):
+        if self._obs_windows is not None:
+            return self._obs_windows
+
+        files = list(self.root_dir.glob("*total.csv"))
+        if len(files) == 0:
+            raise FileNotFoundError(f"No *total.csv in {self.root_dir}")
+
+        df = pd.read_csv(files[0])
+
+        # flexibly grab time column
+        for col in ["time", "TIME", "t"]:
+            if col in df.columns:
+                time = df[col].values.astype(float)
+                break
+        else:
+            raise ValueError("No time column found")
+
+        # compute windows using your segmentation logic
+        sort_idx = np.argsort(time)
+        t_sorted = time[sort_idx]
+        segs = breaking_up_data(t_sorted, break_val=break_val)
+
+        windows = [(float(t_sorted[r[0]]), float(t_sorted[r[-1]])) for r in segs]
+
+        self._obs_windows = np.asarray(windows, dtype=float)
+        return self._obs_windows

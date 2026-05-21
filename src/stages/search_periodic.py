@@ -39,7 +39,7 @@ class PeriodicSearchConfig:
     flavour: str = "TGLC"
 
     # strict stop thresholds (active behavior)
-    min_snr: float = 7.0
+    min_snr: float = 10.0
     min_sde: float = 10.0
 
     # caps
@@ -61,8 +61,8 @@ class PeriodicSearchConfig:
 
     # optional seeded pre-pass later (off by default)
     use_seed_periods: bool = False
-    seed_window_frac: float = 0.02  # +/- 2% around seed periods
-    seed_grid_size: int = 400           # how fine to scan within the window
+    seed_window_frac: float = 0.1  # +/- 5% around seed periods
+    seed_grid_size: int = 2500           # how fine to scan within the window
 
     power_baseline_kernel: int = 25
     use_iteration_limit_for_threshold_failures = False  # optional continue if threshold failure if you want it
@@ -157,35 +157,34 @@ def best_peak_index_from_power(power_raw, cfg):
 
 
 
-def evaluate_best_peak(model, results, idx, power_final, cfg, accepted_events):
+def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accepted_events):
     period = float(results.period[idx])
     t0 = float(results.transit_time[idx])
     duration = float(results.duration[idx])
     depth = normalize_depth_to_fractional(results.depth[idx])  # your new policy
 
     # Compute SDE
-    mad = sst.median_abs_deviation(power_final)
-    print('mad', mad)
-    if mad == 0.:
-        print('mad == 0: standard deviation is', np.std(power_final), ', mad without running median is', sst.median_abs_deviation(results.power))
+    # mad = sst.median_abs_deviation(power_final)
+    # print('mad', mad)
+    # if mad == 0.:
+    #     print('mad == 0: standard deviation is', np.std(power_final), ', mad without running median is', sst.median_abs_deviation(results.power))
 
-        mad = np.nanmax([
-            1e-5,
-            np.std(power_final),
-            sst.median_abs_deviation(results.power)
-        ])
+    #     mad = np.nanmax([
+    #         1e-5,
+    #         np.std(power_final),
+    #         sst.median_abs_deviation(results.power)
+    #     ])
 
-    snr_arr = power_final / (mad / 0.67)
-    snr = float(snr_arr[idx])
+    # snr_arr = power_final / (mad / 0.67)
+    # snr = float(snr_arr[idx])
+
+    local_intransit = model.transit_mask(time, period, duration, t0)
+    scatter = np.std(flux[~local_intransit])
+
     
     sde  = (power_final[idx] - np.mean(power_final)) / np.std(power_final)
     # threshold gate
 
-    if cfg.verbose:
-        print(f"Candidate: P={period:.4f} d, SDE={sde:.2f} (min {cfg.min_sde}), SNR={snr:.2f} (min {cfg.min_snr})")
-
-    if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
-        return ("fail_threshold", None, period, t0, duration, None)
 
     # supported transit times (your B choice)
     supported_times = []
@@ -193,11 +192,31 @@ def evaluate_best_peak(model, results, idx, power_final, cfg, accepted_events):
     try:
         stats = model.compute_stats(period, duration, t0)
         counts = stats["per_transit_count"]
+        counts_total = np.sum(counts)
         times_all = stats["transit_times"]
         supported_times = list(times_all[counts > 0])
         n_transits_obs = int(np.sum(counts > 0))
     except ValueError:
         n_transits_obs = 0
+        counts_total = 0
+
+
+    snr = np.sqrt(counts_total) * depth / scatter if scatter > 0 else 0.0
+
+    if cfg.use_seed_periods: 
+
+        if cfg.verbose:
+            print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr})")
+
+        if (snr is None) or (snr < cfg.min_snr):
+            return ("fail_threshold", None, period, t0, duration, None)
+
+    else: 
+        if cfg.verbose:
+            print(f"Candidate: P={period:.4f} d, SDE={sde:.2f} (min {cfg.min_sde}), SNR={snr:.2f} (min {cfg.min_snr})")
+
+        if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
+            return ("fail_threshold", None, period, t0, duration, None)
 
     # single-like gate: mask and continue, but don't save
     if n_transits_obs <= 1:
@@ -228,18 +247,18 @@ def evaluate_best_peak(model, results, idx, power_final, cfg, accepted_events):
     if cfg.plots:
 
         plt.figure(figsize = (10, 6))
-        val_triangles = min(snr_arr)-np.std(snr_arr)
+        # val_triangles = min(snr_arr)-np.std(snr_arr)
         ax = plt.gca()
-        ax.scatter(period, val_triangles, color = 'r', marker = '^', s=20, zorder = 10)
+        ax.scatter(period, min(power_final)-np.std(power_final), color = 'r', marker = '^', s=20, zorder = 10)
 
         plt.xlim(np.min(results.period), np.max(results.period))
         for n in range(2, 10):
             ax.scatter( n*period,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
             ax.scatter(period / n,val_triangles, color = 'maroon', marker = '^', s=20, zorder = 10, alpha= 0.8)
-        plt.ylabel(r'SNR')#, fontsize = 40)
+        plt.ylabel(r'Power Final')#, fontsize = 40)
         plt.xlabel('Period (days)')#, fontsize = 40)
 
-        ax.plot(results.period, snr_arr, color = 'k', lw=0.65)
+        ax.plot(results.period, power_final, color = 'k', lw=0.65)
 
         plt.show()
         plt.close()
@@ -275,9 +294,9 @@ def evaluate_best_peak(model, results, idx, power_final, cfg, accepted_events):
     return ("accept", ev, period, t0, duration, None)
 
 
-def process_bls_results(model, results, cfg, accepted_events):
+def process_bls_results(time, flux, model, results, cfg, accepted_events):
     idx, power_final = best_peak_index_from_power(results.power, cfg)
-    return evaluate_best_peak(model, results, idx, power_final, cfg, accepted_events)
+    return evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accepted_events)
 
 
 def run_bls(model, durations, cfg, time_span_days, period_grid=None, max_per=None):
@@ -344,7 +363,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
         results =  run_bls(model, durations, cfg, np.ptp(time_new), period_grid=period_grid, max_per=max_per)
 
         # evaluate best peak (single/repeat/accept/stop)
-        msg, ev, period, t0, duration, rep_idx = process_bls_results(model, results, cfg, accepted_events)
+        msg, ev, period, t0, duration, rep_idx = process_bls_results(time, flux, model, results, cfg, accepted_events)
 
         # ---- STRICT STOP ----
         if msg == "fail_threshold":
@@ -482,6 +501,8 @@ def periodic_search(target, *, cfg=PeriodicSearchConfig(), seed_periods=None,
     intransit = np.zeros_like(time, dtype=bool)
 
     accepted_events, intransit = run_seed_prepass_full_lc(time, flux, flux_err, cfg, seed_periods, accepted_events, intransit)
+
+    cfg.use_seed_periods = False
     periodic_events = run_periodic_full_and_chunked(time, flux, flux_err, cfg, accepted_events=accepted_events, intransit=intransit)
     # Write periodic events into the run JSON (Option 2)
     payload_update = {

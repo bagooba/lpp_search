@@ -10,8 +10,7 @@ from core.planet_candidate import PlanetCandidate
 from utils.handling_data import bin_by_time_many_args
 from core.target import Target
 from collections import OrderedDict
-
-pipeline_sort = {"TGLC":0, "SPOC_2min":1, "SPOC_30min":2, "QLP":3, "ELEANOR":4} 
+from utils.other_pipelines import get_or_build_stitched_parquet, read_stitched_parquet
 
 
 
@@ -48,9 +47,7 @@ def choose_epochs(time, cand, max_epochs=3):
 
 
 
-def creating_phase_folded_figure(time, flux, err, cand: PlanetCandidate, gs, pipeline="TGLC"):
-    ppl_num = pipeline_sort[pipeline]
-    ax = plt.subplot(gs[0, ppl_num])
+def creating_phase_folded_figure(time, flux, err, cand: PlanetCandidate, ax, pipeline="TGLC"):
 
     time = np.asarray(time, dtype=float)
     flux = np.asarray(flux, dtype=float)
@@ -93,6 +90,7 @@ def creating_phase_folded_figure(time, flux, err, cand: PlanetCandidate, gs, pip
         fmt="o", ms=3, color="k", ecolor="k", lw=0.8, zorder=1
     )
 
+    ax.set_title(ppl, loc = 'left', fontsize = 9)
     ax.tick_params(labelsize=7)
     ax.set_ylabel("Relative Flux", fontsize=9)
     ax.set_xlabel("Phase", fontsize=9)
@@ -101,10 +99,93 @@ def creating_phase_folded_figure(time, flux, err, cand: PlanetCandidate, gs, pip
     return ax
 
 
+# def creating_centroid_lc_and_grid(centrx, centry, ax):
+
+def building_indiv_transit_lcs(time, flux, err, ax_lst, t0_lst, cand: PlanetCandidate):
+
+    t_diff_tups = []
+    for iii, t0 in enumerate(t0_lst):
+        ax = ax_lst[iii]
+        mask = np.abs(time -t0) < dur*1.5
+        
+        ntime, nflux, nerr = time[mask], flux[mask], err[mask]
+        t_diff_tups.append(tuple(min(ntime), max(ntime)))
+        if len(t0_lst)>1:
+
+            transit_num = list(cand.transit_times_days).index(t0)
+        else:
+            transit_num = 0
+
+        creating_single_transit_figure(time, flux, err, cand, ax, t0=t0, title = "Obs Transit: "+str(transit_num))
+
+    return t_diff_tups
+
+
+
+
+
+def creating_single_transit_figure(time, flux, err, cand: PlanetCandidate, ax, pipeline="TGLC", t0=False, title = False):
+
+    if type(t0)==bool:
+        t0 =cand.t0_days
+
+    if type(title)==bool:
+        title = ppl
+    time = np.asarray(time, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+
+    if err is None:
+        err = np.full(len(flux), np.nanstd(flux), dtype=float)
+    else:
+        err = np.asarray(err, dtype=float)
+        if len(err) != len(flux):
+            err = np.full(len(flux), np.nanstd(flux), dtype=float)
+
+    # Guard: only makes sense for periodic candidates with finite positive P
+
+    keep_indx = np.abs(time - t0) < cand.duration_days*1.5   # within ±1.5 durations of transit center
+
+    # Bin in "time-from-transit" (days) using x = phase * P, then convert back to phase for plotting
+    bin_time, bin_dict = bin_by_time_many_args(
+        time[keep_indx],         # days from transit center
+        10,                      # bin size (your function’s units; assuming minutes or something consistent with your usage)
+        flux=flux[keep_indx],
+        err=err[keep_indx]
+    )
+    bin_flux, bin_err = bin_dict["flux"], bin_dict["err"]
+
+    # errorbar doesn't accept s= ; use fmt/ms
+    ax.errorbar(
+        time[keep_indx], flux[keep_indx], yerr=err[keep_indx],
+        fmt=".", ms=2, color="lightgrey", ecolor="lightgrey", lw=0.5, zorder=0
+    )
+    ax.errorbar(
+        bin_time, bin_flux, yerr=bin_err,
+        fmt="o", ms=3, color="k", ecolor="k", lw=0.8, zorder=1,
+    )
+
+    ax.set_title(title, loc = 'left', fontsize = 9)
+    ax.tick_params(labelsize=7)
+    ax.set_ylabel("Relative Flux", fontsize=9)
+    ax.set_xlabel("Phase", fontsize=9)
+    # ax.set_xlim(-0.5, 0.5)
+
+    return ax
+
+def build_centroid_plots(centrx, centry, time, t_lims_lst, ax_vals):
+    for iii, lims in enumerate(t_lims_lst):
+        mask = np.where(lims[0]<= time <=lims[1])
+        ax_vals[iii].scatter(centrx[mask], centry[mask])
+
+
 
         
+def creating_Nplanets_pages(target: Target, cand: PlanetCandidate, planet_df, eleanor = False):
+    pipeline_sort = {"TGLC":0, "SPOC_2min":1, "SPOC_30min":2, "QLP":3, "TESS-SPOC":4} 
 
-def creating_2_Nplanets_pages(target: Target, cand: PlanetCandidate, planet_df):
+    if eleanor:
+        pipeline_sort = {"TGLC":0, "SPOC_2min":1, "SPOC_30min":2, "QLP":3, "TESS-SPOC":4, "eleanor": 5} 
+
 
     ticid = target.ticid
     ppl = 'TGLC'
@@ -112,8 +193,9 @@ def creating_2_Nplanets_pages(target: Target, cand: PlanetCandidate, planet_df):
     total_csv = find_total_csv(target.root_dir, target.data_source.value)
     df = pd.read_csv(total_csv).dropna(subset=["FLUX"])
 
-    time, flux, err = [np.array(df[col]) for col in ['TIME', 'FLUX', 'FLUX_ERR']]
+    stitched_params = [np.array(df[col]) for col in ['TIME', 'FLUX', 'FLUX_ERR', 'CENTROID_X', 'CENTROID_Y']]
     
+    time, flux, err = stitched_params[0], stitched_params[1], stitched_params[2]   
     catalog_df = build_catalog_df_for_target(target)
 
     try:
@@ -129,54 +211,100 @@ def creating_2_Nplanets_pages(target: Target, cand: PlanetCandidate, planet_df):
         print('Error')
     
     ymin = np.nanmin([np.percentile(flux, 0.25)])*0.95 
-    #,1.-(max(planet_df['Depth']))]) #define y-axis limits by percentages to avoid using es 
     ymax = np.percentile(flux,99.5)*1.05
     delta_y = np.abs(ymax-ymin)
     ymin = ymin-(delta_y*.05) #make sure ymin allows for all data
 
+    epochs_rw2 = choose_epochs(time, cand)
 
     fig0 = plt.figure(figsize=(8.5, 11),constrained_layout=True,dpi=100)
     gs = fig0.add_gridspec(1,2,width_ratios=[4.25, 1], wspace = 0.1) #create grid for subplots - makes it easier to assign where each plot goes
     
-    gs0 = gs[0].subgridspec(7, 5, wspace=0.02)
+    gs0 = gs[0].subgridspec(7, 6, wspace=0.02)
     gs1 = gs[1].subgridspec(1, 1)   
+
+    gs_strow = [fig0.add_subplot(gs0[1, x] ) for x in np.arange(1, int(len(epochs_rw2)*2), 2)]
+    #row 1: phase folded data, each pipeline
+
+
+    gs_centr = [
+        gs0[2:4, x:x+2].subgridspec(3, 2, wspace=0.05, hspace=0.05)
+        for x in range(0, 6, 2)]
+    
+    axes_centr = []
+
+    for g in gs_centr:
+        axes = [
+            fig0.add_subplot(g[i, j])
+            for i in range(3)
+            for j in range(2)
+        ]
+        axes_centr.append(axes)
 
 
     ymin = np.nanmin([np.percentile(flux, 0.25)])*0.95 
     #,1.-(max(planet_df['Depth']))]) #define y-axis limits by percentages to avoid using es 
     ymax = np.percentile(flux,99.5)*1.05
     delta_y = np.abs(ymax-ymin)
-    ymin = ymin-(delta_y*.05) #make sure ymin allows for all data
-    subplot_row = 0
-    
-    ax1 = creating_phase_folded_figure(
-        time, flux, err, cand, gs0, ppl)
-    ax1.set_ylim(ymin, ymax=)
+    ymin = ymin-(delta_y*.05) #make sure ymin allows for all data   
 
-    subplot+=1
+    t_diff_tups = building_indiv_transit_lcs(time, flux, err, gs_strow, epochs_rw2, cand)
+    for ax1 in gs_strow:
+        ax1.set_ylim(ymin, ymax)    
+
+    if cand.ptype[0].upper() == 'P':
+        fn = creating_phase_folded_figure
+    else:
+        fn = creating_single_transit_figure
+        
+    for ppl in pipeline_sort.key():
+        ax = fig0.add_subplot(gs0[0, pipeline_sort[ppl]])
+        ax = fn(time, flux, err, cand, ax, ppl)
+        ax.set_ylim(ymin, ymax)
+        if ppl in pipeline_sort.keys()[1:]:
+
+            parq = get_or_build_stitched_parquet(target, ppl, delete_fits=True)
+            stitched_params = read_stitched_parquet(parq)
+            if len(stitched_params)>0:
+                time_p, flux_p, err_p = stitched_params[0], stitched_params[1], stitched_params[2]
+                ax = fn(time_p, flux_p, err_p, cand, ax, ppl)
+                ax.set_ylim(ymin, ymax)
+        
+        if len(stitched_params)>3:
+            if ppl == 'TGLC':
+                time_p, flux_p, err_p = time, flux, err
+                if (np.sum(np.abs(stitched_params[3].any())>0)>1) and (np.sum(np.abs(stitched_params[4].any())>0)>1):
+                    for idx, axes in enumerate(axes_centr):
+                        centrx, centry =  stitched_params[3], stitched_params[4]
+                        build_centroid_plots(centrx, centry, time_p, epochs_rw2, ax_vals = ax)
+
+
+
+
+
     
     #put the other pipeline stuff here
                 
-    ax_fin = plt.subplot(gs1[:,-1]) #for the last subplot, print text
-    txtstr = '----- Planet Parmas -----'                              +'\n'\
+    ax_fin = fig0.add_subplot(gs1[:,-1]) #for the last subplot, print text
+    # txtstr = '----- Planet Parmas -----'                              +'\n'\
     
-    txtstr = txtstr + '--' +'Planet Num='+ str(int(planet.Planet_Num))+'--' +'\n'\
-    +'Planet Type='+str(planet.Ptype) +'\n'\
-    +'R_p='  + '{:3.5}'.format(str(planet.Rad_p*float(catalog_df.Rad)*109.122))    +'[R_e]'   +'\n'\
-    +'t0='   + '{:4.9}'.format(str(planet.T0))       +'[TJD]'   +'\n'\
-    +'depth='+ '{:1.6}'.format(str(planet.Depth))               +'\n'\
-    +'T='    + '{:2.5}'.format(str(planet.Dur))      +'[h]'     +'\n'\
-    +'P_c='  + '{:5.6}'.format(str(planet.Period))      +'[d]'     +'\n'
+    # txtstr = txtstr + '--' +'Planet Num='+ str(int(planet.Planet_Num))+'--' +'\n'\
+    # +'Planet Type='+str(planet.Ptype) +'\n'\
+    # +'R_p='  + '{:3.5}'.format(str(planet.Rad_p*float(catalog_df.Rad)*109.122))    +'[R_e]'   +'\n'\
+    # +'t0='   + '{:4.9}'.format(str(planet.T0))       +'[TJD]'   +'\n'\
+    # +'depth='+ '{:1.6}'.format(str(planet.Depth))               +'\n'\
+    # +'T='    + '{:2.5}'.format(str(planet.Dur))      +'[h]'     +'\n'\
+    # +'P_c='  + '{:5.6}'.format(str(planet.Period))      +'[d]'     +'\n'
 
 
     # if len(planet_df)==0:
     #     txtstr = txtstr + '\n'+'\n'+'\n'+'\n'+'\n'+'\n'+'\n'+'\n'+'\n'
 #         plt.axis([0,1,0,1])
-    ax_fin.text(0.05, 0.98, txtstr, transform=ax_fin.transAxes, 
-    verticalalignment='top', horizontalalignment='left', fontsize = 10)
+    # ax_fin.text(0.05, 0.98, txtstr, transform=ax_fin.transAxes, 
+    # verticalalignment='top', horizontalalignment='left', fontsize = 10)
 #         plt.text(0., 0., txtstr,fontsize=8)
-    plt.xticks([])
-    plt.yticks([])
-    plt.axis('off')
+    # plt.xticks([])
+    # plt.yticks([])
+    # plt.axis('off')
 
 

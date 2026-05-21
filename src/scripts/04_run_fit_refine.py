@@ -33,6 +33,7 @@ from utils.queue import enqueue
 from stages.search_singles import singles_search, SinglesSearchConfig
 from utils.handling_data import normalize_depth_to_fractional
 from engines.pyMC_core import pymc_fit_candidate
+from utils.check_singles_recovery import check_singles_against_periodic_candidate
 
 TARGET_GLOB = "../../toi_data/target_*"   # adjust
 
@@ -40,6 +41,13 @@ TARGET_GLOB = "../../toi_data/target_*"   # adjust
 # ---------------------------
 # I/O helpers
 # ---------------------------
+
+
+def overwrite_run_json_keys(run_path: Path, updates: dict) -> None:
+    d = json.loads(run_path.read_text())
+    d.update(updates)
+    run_path.write_text(json.dumps(d, indent=2, sort_keys=True))
+
 def load_run_json(run_path: Path) -> dict:
     return json.loads(run_path.read_text())
 
@@ -80,6 +88,44 @@ def _epochs_in_window(tmin, tmax, t0, P):
     ks = np.arange(k0, k1 + 1)
     return t0 + ks * P
 
+
+
+def single_matches_periodic(s_t0, periodic_candidates, time_min, time_max, fixed_tol_days=0.05):
+    """
+    Return True if a single event time matches ANY epoch of fitted periodic candidates.
+    """
+    s_t0 = float(s_t0)
+
+    for p in periodic_candidates:
+        if not getattr(p, "fit_is_current", False):
+            continue
+
+        P  = p.period_days
+        t0 = p.t0_days
+        dur = p.duration_days
+
+        if P is None or t0 is None:
+            continue
+
+        P = float(P); t0 = float(t0)
+
+        if not np.isfinite(P) or P <= 0:
+            continue
+
+        # predict transit times in window
+        epochs = _epochs_in_window(time_min, time_max, t0, P)
+
+        # tolerance: max(fixed, 0.25 * duration)
+        if dur is not None and np.isfinite(dur):
+            tol = max(fixed_tol_days, 0.25 * float(dur))
+        else:
+            tol = fixed_tol_days
+
+        # check match
+        if np.min(np.abs(epochs - s_t0)) <= tol:
+            return True
+
+    return False
 # def consume_singles_under_periodics(final_candidates, time_min, time_max, fixed_tol_days=0.05):
 #     periodics = [c for c in final_candidates if c.ptype == "Periodic" and c.fit_is_current]
 #     singles   = [c for c in final_candidates if c.ptype == "Single"]
@@ -188,7 +234,7 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
     return bool(ok)
 
 
-def finalize_pass1_singles_only(target, run_path, run_json, global_csv_path):
+def finalize_pass1_singles_only(target, run_path, run_json):
     raw_pass1 = run_json.get("dt_events_raw_pass1", [])
     pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
 
@@ -212,13 +258,7 @@ def finalize_pass1_singles_only(target, run_path, run_json, global_csv_path):
         fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
         single_candidates.append(sc)
 
-    per_target_csv = write_final_candidates_csv(target, single_candidates)
-    append_global_candidates_csv(single_candidates, target, global_csv_path)
-
-    target.set_stage(PipelineStage.FITTED)
-    enqueue("DONE_FOUND", target.ticid) 
-    upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "done_no_periodic", "finished_at": datetime.now().isoformat()}})
-    print(f"[DONE] {target.root_dir.name}: periodic=0; wrote {per_target_csv}")
+    return pass1_events, single_candidates
 
 def _summary_median(cand, varname, fallback=None):
     """
@@ -235,7 +275,7 @@ def _summary_median(cand, varname, fallback=None):
 
 
 def periodic_mask_from_fitted_candidate(time: np.ndarray, cand: PlanetCandidate,
-                                        buffer_days: float = 0.2) -> np.ndarray:
+                                        buffer_days: float = 0.5) -> np.ndarray:
     """
     Build a full-length in-transit mask using PyMC medians:
       - Per median
@@ -283,103 +323,141 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
 
 
-    if not periodic_raw:
+    if periodic_raw is None:
         attempts = run_json.get("periodic_attempts", [])
         if attempts:
             periodic_raw = attempts[-1].get("periodic_events_raw", [])
 
-    if not periodic_raw:
-        finalize_pass1_singles_only(target, run_path, run_json, global_csv_path)
-        return
-    
-    
+    if periodic_raw is None:
+        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json, global_csv_path)
+        
+        # return
+    elif isinstance(periodic_raw, list) and len(periodic_raw) == 0:
+        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json, global_csv_path)
 
-    periodic_events = [PeriodicEvent.from_dict(d) for d in periodic_raw]
-
-    # Load merged total for fitting arrays
-    flavour = target.data_source.value
-    total_csv = find_total_csv(target.root_dir, flavour)
-    df = pd.read_csv(total_csv).dropna(subset=["FLUX"])
-    time = df["TIME"].to_numpy(float)
-    flux = df["FLUX"].to_numpy(float)
-    unc = df["FLUX_ERR"].to_numpy(float) if "FLUX_ERR" in df.columns else np.full_like(flux, np.nanstd(flux))
-
-    upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "running", "updated_at": datetime.now().isoformat()}})
-
-    # 1) Convert periodic events -> periodic candidates and fit them
     periodic_candidates = []
-    for ev in periodic_events:
-        if ev.duration_days is None or ev.depth is None:
-            upsert_run_json(run_path, {
-                "warnings": [f"Skipped periodic event with missing duration/depth: {ev.to_dict()}"]
-            })
-            continue
-        pc = PlanetCandidate(
-            ptype="Periodic",
-            t0_days=float(ev.t0_days),
-            period_days=float(ev.period_days),
-            duration_days=float(ev.duration_days) if ev.duration_days is not None else None,
-            depth=normalize_depth_to_fractional(ev.depth) if ev.depth is not None else None,
-            n_transits_obs=ev.n_transits_obs,
-            transit_times_days = ev.transit_times_days,
-            source="BLS",
-        )
-        fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
-        periodic_candidates.append(pc)
 
-    # 2) Mask using fitted periodic candidates ONLY
-    intransit = np.zeros_like(time, dtype=bool)
-    for pc in periodic_candidates:
-        if pc.fit_is_current:
-            intransit |= periodic_mask_from_fitted_candidate(time, pc, buffer_days=0.2)
+    if periodic_raw:
+        periodic_events = [PeriodicEvent.from_dict(d) for d in periodic_raw]
 
-    have_mask = bool(intransit.any())
+        # Load merged total for fitting arrays
+        flavour = target.data_source.value
+        total_csv = find_total_csv(target.root_dir, flavour)
+        df = pd.read_csv(total_csv).dropna(subset=["FLUX"])
+        time = df["TIME"].to_numpy(float)
+        flux = df["FLUX"].to_numpy(float)
+        unc = df["FLUX_ERR"].to_numpy(float) if "FLUX_ERR" in df.columns else np.full_like(flux, np.nanstd(flux))
 
-    # 3) DT pass-2 (residual) ONLY if we actually masked something
+        upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "running", "updated_at": datetime.now().isoformat()}})
 
-    pass2_events = []
+        # 1) Convert periodic events -> periodic candidates and fit them
+        for ev in periodic_events:
+            if ev.duration_days is None or ev.depth is None:
+                upsert_run_json(run_path, {
+                    "warnings": [f"Skipped periodic event with missing duration/depth: {ev.to_dict()}"]
+                })
+                continue
+            pc = PlanetCandidate(
+                ptype="Periodic",
+                t0_days=float(ev.t0_days),
+                period_days=float(ev.period_days),
+                duration_days=float(ev.duration_days) if ev.duration_days is not None else None,
+                depth=normalize_depth_to_fractional(ev.depth) if ev.depth is not None else None,
+                n_transits_obs=ev.n_transits_obs,
+                transit_times_days = ev.transit_times_days,
+                source="BLS",
+            )
+            print('Checking period: ', ev.period_days)
+            fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
+            periodic_candidates.append(pc)
 
+        # 2) Mask using fitted periodic candidates ONLY
+        intransit = np.zeros_like(time, dtype=bool)
+        for pc in periodic_candidates:
+            if pc.fit_is_current:
+                intransit |= periodic_mask_from_fitted_candidate(time, pc, buffer_days=0.2)
 
-    if have_mask:
-        singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
-        singles_search(
-            target,
-            cfg=singles_cfg,
-            exclude_mask=intransit,
-            pass_label="pass2",
-            run_id=run_path.stem.replace("run_", ""),
-            run_path=run_path
-        )
-        # Reload run json to get pass2 events
+        have_mask = bool(intransit.any())
 
-        run_json = load_run_json(run_path)
-        raw_pass2 = run_json.get("dt_events_raw_pass2", [])
-        pass2_events = [TransitEvent.from_dict(d) for d in raw_pass2] if isinstance(raw_pass2, list) else []
+        print(f"[DEBUG] masked points: {intransit.sum()} / {len(intransit)}")
+        print(f"[DEBUG] periodic fitted: {[pc.fit_is_current for pc in periodic_candidates]}")
 
 
-    # 4) Fit the pass2 events as singles (then later: promote periodic if periodicity emerges)
-    single_candidates = []
-    for ev in pass2_events:
-        sc = PlanetCandidate(
-            ptype="Single",
-            t0_days=float(ev.t0_days),
-            period_days=None,
-            duration_days=float(ev.duration_days),
-            depth=normalize_depth_to_fractional(ev.depth),
-            snr=None if ev.snr is None else float(ev.snr),
-            source="DT_pass2",
-            transit_times_days=[float(ev.t0_days)]
-        )
-        fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
-        single_candidates.append(sc)
+        # 2.5) CHECK BEFORE DT pass-2 - were all the DT pass-1 things found? 
+
+        raw_pass1 = run_json.get("dt_events_raw_pass1", [])
+        pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
+
+        for pc in periodic_candidates:
+            result = check_singles_against_periodic_candidate(
+                periodic=pc,               # your periodic PlanetCandidate
+                singles=pass1_events       # list of PlanetCandidate (ptype="Single")
+            )
+
+            print("Matched:", result["n_matched"])
+            print("Unmatched:", result["n_unmatched"])
+
+            for c in result["unmatched_candidates"]:
+                print("Unmatched single:", c.t0_days)
+
+        # 3) DT pass-2 (residual) ONLY if we actually masked something
+
+        pass2_events = []
+
+
+        if have_mask:
+            # Prevent pass2 accumulation across reruns
+            overwrite_run_json_keys(run_path, {
+                "dt_events_raw_pass2": [],
+                # optional: also clear any derived products you might store
+                # "dt_events_pass2_summary": [],
+})
+            singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
+            singles_search(
+                target,
+                cfg=singles_cfg,
+                exclude_mask=intransit,
+                pass_label="pass2",
+                run_id=run_path.stem.replace("run_", ""),
+                run_path=run_path
+            )
+            # Reload run json to get pass2 events
+
+            run_json = load_run_json(run_path)
+            raw_pass2 = run_json.get("dt_events_raw_pass2", [])
+            pass2_events = [TransitEvent.from_dict(d) for d in raw_pass2] if isinstance(raw_pass2, list) else []
+        print(f"[DEBUG] pass2_events: {len(pass2_events)}")
+
+
+        time_min = float(time.min())
+        time_max = float(time.max())
+
+        # 4) Fit the pass2 events as singles (then later: promote periodic if periodicity emerges)
+        single_candidates = []
+        for ev in pass2_events:
+            if single_matches_periodic(ev.t0_days, periodic_candidates, time_min, time_max):
+                continue
+
+            sc = PlanetCandidate(
+                ptype="Single",
+                t0_days=float(ev.t0_days),
+                period_days=None,
+                duration_days=float(ev.duration_days),
+                depth=normalize_depth_to_fractional(ev.depth),
+                snr=None if ev.snr is None else float(ev.snr),
+                source="DT_pass2",
+                transit_times_days=[float(ev.t0_days)]
+            )
+            fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
+            single_candidates.append(sc)
 
     # 5) Optional promotion: check if pass2 DT events contain periodic modes
-    # (You said: if periodic fit fails, leave them as singles.)
-    modes = periodic_modes_from_dt_events(pass2_events, min_support=3, use_depth=True)
+    pass_events = pass1_events if not periodic_raw else pass2_events
+    modes = periodic_modes_from_dt_events(pass_events, min_support=3, use_depth=True)
 
     promotions = periodic_candidates_from_modes(
         modes,
-        pass2_events,
+        pass_events,
         source="DT_PASS2_PROMOTED",
         min_support=3,
         notes_prefix="promoted_from_pass2; "

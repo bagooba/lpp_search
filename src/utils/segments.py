@@ -55,3 +55,26 @@ def breaking_up_data(time: np.ndarray, break_val: float = 27.0, min_size: float 
             if np.ptp(time[r]) > min_size:
                 indexes.append(r)
     return indexes
+
+
+def windows_from_time(time, break_val=0.5, min_size=0.0):
+    """
+    Convert a time array into observed windows [(start,end), ...]
+    using Mallory's segmentation helper.
+
+    break_val: gap (days) that splits windows (coverage granularity).
+    min_size: drop tiny windows shorter than this (days).
+    """
+    time = np.asarray(time, dtype=float)
+    sort_idx = np.argsort(time)
+    t = time[sort_idx]
+
+    segs = breaking_up_data(t, break_val=break_val, min_size=min_size)
+
+    windows = []
+    for r in segs:
+        # r indexes into sorted time t
+        start = float(t[r[0]])
+        end   = float(t[r[-1]])
+        windows.append((start, end))
+    return np.asarray(windows, dtype=float)

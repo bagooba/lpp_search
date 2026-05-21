@@ -69,7 +69,7 @@ def DT_analysis(time, flux, flux_err, confidence, DT_Quite=True, is_flat=True):
 @dataclass
 class SinglesSearchConfig:
     flavour: str = "TGLC"
-    confidence: float = 0.55
+    confidence: float = 0.75
     plot_events: bool = False
     verbose: bool = False
 

@@ -118,7 +118,7 @@ def prepare_fit_data(time, flux, unc, candidate):
     if candidate.ptype == "Single":
         # window around t0 using candidate.duration_days as your scale
         t0 = candidate.t0_days
-        dur = candidate.duration_dayss
+        dur = candidate.duration_days
         idx = np.where(np.abs(time - t0) < (1.0 + dur))
         return time[idx], flux[idx], unc[idx], cad
 
@@ -174,8 +174,12 @@ def initialize_batman_params(params, t0, per, depth, ld_q):
 def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_ld_fixed=True):
     # --- star facts from Target ---
     if target.rho_star is None:
+        print(target._catalog)
+        # target.rho_star = target._compute_r
         raise ValueError("target.rho_star is None. Ensure catalog Mass/Rad exist and rho_star was computed.")
-    rho_star = float(target.rho_star)
+        # rho_star = 
+    else:
+        rho_star = float(target.rho_star)
 
     u1, u2 = target.ld_u1_u2
 
@@ -205,11 +209,11 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
 
     # count observed transits. Override from candidate if available.
-    nobs_est = None
+    nobs_est = 0
     if type_fn == "Periodic":
         nobs_est = getattr(candidate, "n_transits_obs", None)
         print('nobs_est from candidate:', nobs_est)
-        if nobs_est is None:
+        if nobs_est == 0:
             windows = make_windows_from_time_stamps(np.array(time), gap_threshold=0.5)
             tmp = 0
             for s, e in windows:

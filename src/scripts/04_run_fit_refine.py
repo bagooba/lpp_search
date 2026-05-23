@@ -329,28 +329,23 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
     periodic_raw = run_json.get("periodic_events_raw_latest", None)
 
-    dt1_raw = run_json.get("dt_events_raw_pass1", None)
-
-
     if periodic_raw is None:
-        print('no periodic')
-
         attempts = run_json.get("periodic_attempts", [])
         if attempts:
             periodic_raw = attempts[-1].get("periodic_events_raw", [])
 
-    if periodic_raw is None:
+    if (periodic_raw is None) or (isinstance(periodic_raw, list) and len(periodic_raw) == 0):
         print('no periodic')
-        
-        if dt1_raw is None:
-            print('no singles events')
-            attempts = run_json.get("periodic_attempts", [])
+    
+        if not bool(getattr(target, "dt_prelim_found", False)):
+            print('no initial singles')
+            print(f"[SKIP] {target.root_dir.name}: dt_prelim_found=False, dt_periodic_found = False, nothing to fit.")
 
-        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json)
-        
-        # return
-    elif isinstance(periodic_raw, list) and len(periodic_raw) == 0:
-        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json)
+        else:
+            pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json)
+
+
+
 
     periodic_candidates = []
 

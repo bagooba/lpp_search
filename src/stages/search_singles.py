@@ -55,16 +55,17 @@ def plot_lc_with_bboxes(lc_object, bboxes, ax=None, epoch=0, **kwargs):
         ax.add_collection(PatchCollection(recs, lw=0.2, match_original=True, zorder=5))
         return ax
 
-def DT_analysis(time, flux, flux_err, confidence, DT_Quite=True, is_flat=True):
+def DT_analysis(time, flux, flux_err, confidence,is_flat=True): 
+    # DT_Quite=True, 
     # print('not even here?')
-    if DT_Quite:
-        save_stdout, save_stderr = sys.stdout, sys.stderr
-        sys.stdout = open('.trash.txt', 'w'); sys.stderr = open('.trash.txt', 'w')
+    # if DT_Quite:
+    #     save_stdout, save_stderr = sys.stdout, sys.stderr
+    #     sys.stdout = open('.trash.txt', 'w'); sys.stderr = open('.trash.txt', 'w')
     model = dt.DeepTransit(make_LightKurveObject(time, flux, flux_err), is_flat=is_flat)
     bboxes = model.transit_detection(str(con.MODEL_PATH), confidence_threshold=confidence)
-    if DT_Quite:
-        sys.stdout.close(); sys.stderr.close()
-        sys.stdout, sys.stderr = save_stdout, save_stderr
+    # if DT_Quite:
+    #     sys.stdout.close(); sys.stderr.close()
+    #     sys.stdout, sys.stderr = save_stdout, save_stderr
     return bboxes
 
 @dataclass
@@ -82,7 +83,7 @@ def detect_transit_events(time, flux, flux_err, cfg):
       - bboxes: raw DT bboxes (useful for plotting)
     This is event-level output (NOT planet candidates yet).
     """
-    bboxes = DT_analysis(time, flux, flux_err, cfg.confidence, DT_Quite=True, is_flat=True)
+    bboxes = DT_analysis(time, flux, flux_err, cfg.confidence, is_flat=True)
     events = []
     
     print('bboxes', type(bboxes), bboxes)

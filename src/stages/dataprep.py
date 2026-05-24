@@ -124,7 +124,8 @@ def extract_data_from_fits_files(fitsFile, PL="", sector=0):
     useful = []
     if len(flux_cols) > 1:
         for c in flux_cols:
-            out = c.split('_')[0][:4] + '_FLUX'
+            prefix = c.split('_')[0][:4]
+            out = f"{prefix}_FLUX" if prefix != "FLUX" else c
             df[out] = data[c]; useful.append((c, out))
     else:
         df['FLUX'] = data[flux_cols[0]]; useful.append((flux_cols[0], 'FLUX'))

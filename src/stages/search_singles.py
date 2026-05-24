@@ -234,12 +234,27 @@ def singles_search(target, *, cfg=SinglesSearchConfig(), run_1=True,
     if not run_1:
         column_names.append("SNR")
 
+
+# Sort and deduplicate events by t0 for deterministic output
+    events = sorted(events, key=lambda e: e.t0_days)
+    seen_t0 = set()
+    unique_events = []
+    for e in events:
+        if e.t0_days not in seen_t0:
+            seen_t0.add(e.t0_days)
+            unique_events.append(e)
+    
+    # Build event_df from unique sorted events
     event_df = pd.DataFrame(columns=column_names)
-    for k, e in enumerate(events, start=1):
+    for k, e in enumerate(unique_events, start=1):
         row = [ticid, k, np.inf, float(e.t0_days), float(e.duration_days), float(e.depth)]
         if not run_1:
             row.append(np.nan if e.snr is None else float(e.snr))
         event_df.loc[len(event_df)] = row
+    
+    # Sort event_df by T0 for deterministic output
+    event_df = event_df.sort_values("T0").reset_index(drop=True)
+
 
     params_df = pd.DataFrame()  # keep empty for quick pass
 

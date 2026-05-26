@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH -J fitting_data_
+#SBATCH -J fitting_data
 #SBATCH -o ./SLURM_output/fitting_data_%j.txt
 
 #SBATCH --account=2016394

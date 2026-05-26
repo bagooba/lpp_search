@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH -J plot_outputs_
+#SBATCH -J plot_outputs
 #SBATCH -o ./SLURM_output/plot_outputs_%j.txt
 
 #SBATCH --account=2016394

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH -J periodic_searches_
+#SBATCH -J periodic_searches
 #SBATCH -o ./SLURM_output/periodic_searches_%j.txt
 
 #SBATCH --account=2016394

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH -J start_singles_search_
+#SBATCH -J start_singles_search
 #SBATCH -o ./SLURM_output/start_singles_search_%j.txt
 
 #SBATCH --account=2016394

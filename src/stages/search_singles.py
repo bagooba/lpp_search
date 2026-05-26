@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import json
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -55,17 +56,53 @@ def plot_lc_with_bboxes(lc_object, bboxes, ax=None, epoch=0, **kwargs):
         ax.add_collection(PatchCollection(recs, lw=0.2, match_original=True, zorder=5))
         return ax
 
-def DT_analysis(time, flux, flux_err, confidence,is_flat=True): 
-    # DT_Quite=True, 
-    # print('not even here?')
-    # if DT_Quite:
-    #     save_stdout, save_stderr = sys.stdout, sys.stderr
-    #     sys.stdout = open('.trash.txt', 'w'); sys.stderr = open('.trash.txt', 'w')
-    model = dt.DeepTransit(make_LightKurveObject(time, flux, flux_err), is_flat=is_flat)
-    bboxes = model.transit_detection(str(con.MODEL_PATH), confidence_threshold=confidence)
-    # if DT_Quite:
-    #     sys.stdout.close(); sys.stderr.close()
-    #     sys.stdout, sys.stderr = save_stdout, save_stderr
+# def DT_analysis(time, flux, flux_err, confidence,is_flat=True): 
+#     # DT_Quite=True, 
+#     # print('not even here?')
+#     # if DT_Quite:
+#     #     save_stdout, save_stderr = sys.stdout, sys.stderr
+#     #     sys.stdout = open('.trash.txt', 'w'); sys.stderr = open('.trash.txt', 'w')
+#     model = dt.DeepTransit(make_LightKurveObject(time, flux, flux_err), is_flat=is_flat)
+#     bboxes = model.transit_detection(str(con.MODEL_PATH), confidence_threshold=confidence)
+#     # if DT_Quite:
+#     #     sys.stdout.close(); sys.stderr.close()
+#     #     sys.stdout, sys.stderr = save_stdout, save_stderr
+#     return bboxes
+
+def DT_analysis(time, flux, flux_err, confidence, DT_Quite=True, is_flat = True):
+    """ 
+    @author: D. Dragomir, P.Steimle
+
+
+    Function for the Deep Transit analysis (Cui et al. 2021) that returns only single transit events
+
+    """
+
+    # create a new dataset for the while loop where transits can be masked out
+    
+    
+#     confidence = 1-np.exp(-0.15*snr)
+    print('time len', len(time))
+    if DT_Quite == True:
+        save_stdout = sys.stdout
+        save_stderr = sys.stderr
+        sys.stdout = open('.trash.txt', 'w')
+        sys.stderr = open('.trash.txt', 'w')
+
+        # do check for transits with DT
+        DT_model = dt.DeepTransit(make_LightKurveObject(time, flux, flux_err),  is_flat=is_flat)
+        bboxes = DT_model.transit_detection(model_path, confidence_threshold=confidence)
+
+        sys.stdout = save_stdout
+        sys.stderr = save_stderr
+
+    else:
+        # do check for transits with DT
+        DT_model = dt.DeepTransit(make_LightKurveObject(time, flux, flux_err), is_flat=is_flat)
+        bboxes = DT_model.transit_detection(model_path, confidence_threshold=confidence)
+
+        # if only 1 or 0 boxes were found, break the loop and continue
+
     return bboxes
 
 @dataclass
@@ -165,19 +202,45 @@ def singles_search(target, *, cfg=SinglesSearchConfig(), run_1=True,
 
     # Optional segment quality cut (mirrors your legacy intent
     # Keep only segments with >= ~1 day span; otherwise keep all.
+    events = []
     if total_time.size > 0:
-        idx_blocks = breaking_up_data(total_time, break_val=0.5, min_size=1.0)
-        if len(idx_blocks) > 1:
-            spans = np.array([np.ptp(total_time[idx]) for idx in idx_blocks])
-            good_blocks = [idx_blocks[i] for i in range(len(idx_blocks)) if spans[i] > 1.0]
-            if len(good_blocks) > 0:
-                good_idx = np.concatenate(good_blocks)
-                total_time = total_time[good_idx]
-                total_flux = total_flux[good_idx]
-                total_flux_err = total_flux_err[good_idx]
+        indexes_split_unorganize = breaking_up_data(total_time, break_val = 0.5, min_size = 1.)  
+        all_good_indxs = []
+
+        if len(indexes_split_unorganize)>1:
+            diff_ary = np.array([max(np.array(total_time)[x])-min(np.array(total_time)[x]) for x in indexes_split_unorganize])
+            all_good_indxs =np.concatenate(list(itertools.compress(indexes_split_unorganize, diff_ary>1))).ravel()
+    
+        if len(all_good_indxs) == 0: 
+            all_good_indxs = list(range(len(total_time)))
+            
+    #     print('all good indexes (i.e., itertools result: ', type(all_good_indxs), len(total_time))
+        # list_2 = []
+        # for index, value in enumerate(total_time):
+        #     list_2.append(index)
+    #     print('check differences in good indexes and indexes: ',  [item for item in list_1 if item not in list_2])
+    #     print('type of time array, ', type(total_time))
+        total_time = total_time[all_good_indxs]
+        total_flux = total_flux[all_good_indxs]
+        total_flux_err =total_flux_err[all_good_indxs]
+
+        # idx_blocks = breaking_up_data(total_time, break_val=0.5, min_size=1.0)
+        # if len(idx_blocks) > 1:
+        #     spans = np.array([np.ptp(total_time[idx]) for idx in idx_blocks])
+
+        #     good_idx = np.concatenate(list(itertools.compress(idx_blocks, spans>1))).ravel()
+
+        #     # good_blocks = [idx_blocks[i] for i in range(len(idx_blocks)) if spans[i] > 1.0]
+        #     # if len(good_blocks) > 0:
+        #     # good_idx = np.concatenate(good_blocks)
+        #     total_time = total_time[good_idx]
+        #     total_flux = total_flux[good_idx]
+        #     total_flux_err = total_flux_err[good_idx]
 
     # --- DT detection (this is the core) ---
-    events, bboxes = detect_transit_events(total_time, total_flux, total_flux_err, cfg)
+
+        print('time length', len(total_time))
+        events, bboxes = detect_transit_events(total_time, total_flux, total_flux_err, cfg)
 
     # --- Update Target quick-singles state (existing contract) ---
     target.dt_prelim_found = (len(events) > 0)

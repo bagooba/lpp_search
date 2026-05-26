@@ -348,6 +348,10 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
 
     periodic_candidates = []
+    single_candidates = []
+
+    raw_pass1 = run_json.get("dt_events_raw_pass1", [])
+    pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
 
     if periodic_raw:
         periodic_events = [PeriodicEvent.from_dict(d) for d in periodic_raw]
@@ -397,8 +401,6 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
         # 2.5) CHECK BEFORE DT pass-2 - were all the DT pass-1 things found? 
 
-        raw_pass1 = run_json.get("dt_events_raw_pass1", [])
-        pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
 
         for pc in periodic_candidates:
             result = check_singles_against_periodic_candidate(
@@ -447,7 +449,6 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
         time_max = float(max(time))
 
         # 4) Fit the pass2 events as singles (then later: promote periodic if periodicity emerges)
-        single_candidates = []
         for ev in pass2_events:
             if single_matches_periodic(ev.t0_days, periodic_candidates, time_min, time_max):
                 continue

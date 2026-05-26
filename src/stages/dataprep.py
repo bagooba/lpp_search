@@ -262,6 +262,7 @@ class DataPrep:
         for col, val in self.target._catalog.items():
             setattr(self.target, col, val)
         self.target._compute_rho_star_if_possible()
+        self.target.save_state()   
 
     def find_fits(self) -> List[Path]:
         fits = [Path(p) for p in glob.glob(str(self.target.root_dir / "*.fits"))]

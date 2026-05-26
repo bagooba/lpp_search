@@ -68,7 +68,7 @@ import warnings
 warnings.filterwarnings("ignore")
 display(HTML("<style>.container { width:95% !important; }</style>"))
 
-import lpp_search.src.utils.config as con
+import utils.config as con
 # In[32]:
 
 
@@ -2602,6 +2602,7 @@ def singles_search(ticid, data_total, intransit = [], catalog_df = False, confid
     params_df = []
 
     if len(total_time)>0:
+        print('time length', len(total_time))
 
         bboxes = DT_analysis(total_time, total_flux, total_flux_err, confidence)
     #     print('ran bboxes', bboxes)

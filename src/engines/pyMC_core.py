@@ -1,7 +1,13 @@
 # engines/pymc_core.py
 import os
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 import numpy as np
 import pandas as pd
+import copy
 
 import batman
 import multiprocessing as mp
@@ -40,7 +46,10 @@ def transit_mask_tensors(t, period, duration, T0, cad_minutes=None):
 def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
     
-    cores = min(chains, os.cpu_count() or 1) if cores is None else cores
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+    cores = min(chains, slurm_cpus)
+
+    # cores = min(chains, os.cpu_count() or 1) if cores is None else cores
 
     free_vars = model.free_RVs
     if not free_vars:
@@ -54,12 +63,18 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
     for attempt in range(1, max_attempts + 1):
         print(f"Sampling attempt {attempt}...")
         run = 2+attempt
-        trace = pm.sample(step=step, draws=5000*(run), tune=2000*(run), chains=chains, cores = cores, 
+        try:
+            trace = pm.sample(step=step, draws=5000*(run), tune=2000*(run), chains=chains, cores = cores, 
             # use a safe, explicit multiprocessing context
             mp_ctx=mp.get_context(mp_context),
             # avoid identical RNG streams across chains
             random_seed=list(range(chains)),
 )
+
+        except Exception as e:
+            print(f"Sampling crashed: {e}", flush=True)
+            raise 
+
 
         summary = az.summary(trace)
         if (summary['r_hat'] < rhat_threshold).all():
@@ -77,8 +92,7 @@ class BatmanOp(Op):
     otypes = [pt.dvector]
 
 
-    def __init__(self, model, params):
-        self.model = model
+    def __init__(self, params):
         self.params = params
 
     def make_node(self, *inputs):
@@ -87,22 +101,28 @@ class BatmanOp(Op):
         return Apply(self, converted_inputs, [pt.dvector()])
 
 
+
     def perform(self, node, inputs, outputs):
         time, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad = inputs
 
-        params = self.params
-        model = self.model
+        params = copy.copy(self.params)
 
         params.t0 = float(t0)
         params.per = float(per)
         params.rp = float(rp_rs)
-        params.a = float(a_rs)
+        params.a  = float(a_rs)
         params.inc = float(inc)
         params.ecc = float(ecc)
-        params.u = [float(u1), float(u2)]
+        params.u   = [float(u1), float(u2)]
+
+        model = batman.TransitModel(
+            params,
+            np.asarray(time, dtype=np.float64),
+            supersample_factor=4,
+            exp_time=cad / 24.0 / 60.0,
+        )
 
         outputs[0][0] = model.light_curve(params)
-
 
     def grad(self, inputs, g_outputs):
         # For now, return zeros (no gradient)
@@ -173,11 +193,14 @@ def initialize_batman_params(params, t0, per, depth, ld_q):
 
 def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_ld_fixed=True):
     # --- star facts from Target ---
+    target.load_state()
     if target.rho_star is None:
         print(target._catalog)
         # target.rho_star = target._compute_r
-        raise ValueError("target.rho_star is None. Ensure catalog Mass/Rad exist and rho_star was computed.")
-        # rho_star = 
+        # raise ValueError("target.rho_star is None. Ensure catalog Mass/Rad exist and rho_star was computed.")
+        print("target.rho_star is None. Ensure catalog Mass/Rad exist and rho_star was computed.")
+
+        rho_star = (0.5 / ((0.5)**3)) * (3.0 / (4.0 * np.pi))
     else:
         rho_star = float(target.rho_star)
 
@@ -256,13 +279,13 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         # p_flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, ...)
 
 
-    batman_model = batman.TransitModel(
-        batman_params,
-        t_fit,
-        supersample_factor=4,
-        exp_time=cad / 24.0 / 60.0,)
+    # batman_model = batman.TransitModel(
+    #     batman_params,
+    #     t_fit,
+    #     supersample_factor=4,
+    #     exp_time=cad / 24.0 / 60.0,)
 
-    batman_op = BatmanOp(batman_model, batman_params)
+    batman_op = BatmanOp(batman_params)
 
     with pm.Model() as model:
         t0 = pm.Uniform("t0", lower=T0 - pTdur, upper=T0 + pTdur)

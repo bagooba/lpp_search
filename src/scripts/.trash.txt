@@ -1,4 +1,16 @@
-Loading Model: /users/malharris/lpp_search/model_TESS.pth
-checking variables first 0.006944410612049978 3610 2
-:319: UserWarning: The total number of progress bar is the upper limit.
-  0%|          | 0/2 [00:00<?, ?it/s] 50%|█████     | 1/2 [00:14<00:14, 15.00s/it]100%|██████████| 2/2 [00:30<00:00, 15.53s/it]3it [00:38, 11.81s/it]                       4it [00:38,  7.35s/it]4it [00:38,  9.70s/it]
+Traceback (most recent call last):
+  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 88, in <module>
+    main(int(idx_str))
+  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 57, in main
+    planet_df, _ = singles_search(t, cfg=cfg, run_1=True, pass_label="pass1")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/users/malharris/lpp_search/src/stages/search_singles.py", line 243, in singles_search
+    events, bboxes = detect_transit_events(total_time, total_flux, total_flux_err, cfg)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/users/malharris/lpp_search/src/stages/search_singles.py", line 123, in detect_transit_events
+    bboxes = DT_analysis(time, flux, flux_err, cfg.confidence, is_flat=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/users/malharris/lpp_search/src/stages/search_singles.py", line 94, in DT_analysis
+    bboxes = DT_model.transit_detection(model_path, confidence_threshold=confidence)
+                                        ^^^^^^^^^^
+NameError: name 'model_path' is not defined

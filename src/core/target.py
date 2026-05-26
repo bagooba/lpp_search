@@ -85,7 +85,7 @@ class Target:
             "pipeline_stage": self.pipeline_stage.name,
             "source_fits": [str(p) for p in self.source_fits],
             "rho_star": self.rho_star,
-            "catalog": self._catalog,
+            "catalog": self._catalog if any(v is not None for v in self._catalog.values()) else {},            
             "dt_prelim_found": self.dt_prelim_found,
             "quick_singles_t0": list(self.quick_singles_t0),
             "last_run_id": self.last_run_id,
@@ -123,7 +123,9 @@ class Target:
                 setattr(self, col, val)
             self._compute_rho_star_if_possible()
 
-        if not isinstance(getattr(self, "_catalog", None), dict) or len(self._catalog) == 0:
+        if (not isinstance(self._catalog, dict) or
+            len(self._catalog) == 0 or
+            all(v is None for v in self._catalog.values())):
             self.load_catalog_csv()
 
         self.dt_prelim_found = pl.get("dt_prelim_found", self.dt_prelim_found)

@@ -90,7 +90,7 @@ def _epochs_in_window(tmin, tmax, t0, P):
 
 
 
-def single_matches_periodic(s_t0, periodic_candidates, time_min, time_max, fixed_tol_days=0.05):
+def single_matches_periodic(s_t0, periodic_candidates, time_min, time_max, fixed_tol_days=0.1):
     """
     Return True if a single event time matches ANY epoch of fitted periodic candidates.
     """

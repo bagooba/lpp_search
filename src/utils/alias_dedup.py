@@ -170,12 +170,12 @@ def _winner_key(c: PlanetCandidate) -> Tuple:
     rhat = _max_rhat(c)
     # rhat_ok: 1 if acceptable / 0 if not (tune threshold)
     rhat_ok = 1
-    if rhat is not None and float(rhat) > 1.05:
+    if rhat is not None and float(rhat) > 1.1:
         rhat_ok = 0
     snr = _snr_med(c)
     P = _period(c)
     per_score = 0.0 if P is None else -float(P)  # shorter is better as tie-breaker
-    return (sig, fit, rhat_ok, snr, per_score)
+    return (sig, fit, snr, rhat_ok, per_score)
 
 
 # ---------- main entrypoint ----------
@@ -188,7 +188,7 @@ def alias_dedup_periodic_candidates(
     depth_ratio_max: float = 1.75,
     # ephemeris fallback thresholds
     epoch_tol_scale: float = 0.25,
-    epoch_tol_floor_days: float = 0.02,
+    epoch_tol_floor_days: float = 0.075,
 ) -> List[PlanetCandidate]:
     """
     Mutates candidates in-place:

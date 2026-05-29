@@ -61,7 +61,7 @@ class PeriodicSearchConfig:
 
     # optional seeded pre-pass later (off by default)
     use_seed_periods: bool = False
-    seed_window_frac: float = 0.1  # +/- 5% around seed periods
+    seed_window_frac: float = 0.02  # +/- 5% around seed periods
     seed_grid_size: int = 2500           # how fine to scan within the window
 
     power_baseline_kernel: int = 25
@@ -210,6 +210,7 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
 
         if (snr is None) or (snr < cfg.min_snr):
             return ("fail_threshold", None, period, t0, duration, None)
+
 
     else: 
         if cfg.verbose:

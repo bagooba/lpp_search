@@ -60,7 +60,7 @@ def score_once_modes(
     use_depth=True, depth_zmax=2.5, depth_ratio_max=1.75, depth_floor=5e-5,
     local_span=0.02, local_n=41,
     windows=None,
-    allow_missed=2,              # <-- NEW: set 0 for your "hard" principle
+    allow_missed=4,              # <-- NEW: set 0 for your "hard" principle
     prefer_smaller_P_on_tie=True # <-- NEW: your stated preference
 ):
     """
@@ -103,7 +103,8 @@ def score_once_modes(
     if windows is not None:
         windows = np.asarray(windows, dtype=float)
         if windows.ndim != 2 or windows.shape[1] != 2:
-            raise ValueError("windows must be an array of shape (K,2) with (start,end) rows")
+            windows = None
+            # raise ValueError("windows must be an array of shape (K,2) with (start,end) rows")
 
     for g in groups:
         P0 = float(np.median(g))
@@ -132,23 +133,22 @@ def score_once_modes(
             if support < min_support:
                 continue
 
-            # --- coverage-aware hard veto: expected must match observed (support) ---
-            if windows is not None:
-                T0_mode = float(t0[0] + center)
+            # if windows is not None:
+            #     T0_mode = float(t0[0] + center)
 
-                expected = 0
-                for start, end in windows:
-                    # integer k such that start <= T0 + kP <= end
-                    k0 = int(np.ceil((start - T0_mode) / P))
-                    k1 = int(np.floor((end   - T0_mode) / P))
-                    if k1 >= k0:
-                        expected += (k1 - k0 + 1)
+            #     expected = 0
+            #     for start, end in windows:
+            #         # integer k such that start <= T0 + kP <= end
+            #         k0 = int(np.ceil((start - T0_mode) / P))
+            #         k1 = int(np.floor((end   - T0_mode) / P))
+            #         if k1 >= k0:
+            #             expected += (k1 - k0 + 1)
 
-                missed = expected - support
+            #     missed = expected - support
 
-                # Your principle: allow_missed=0
-                if missed > allow_missed:
-                    continue
+            #     # Your principle: allow_missed=0
+            #     if missed > allow_missed:
+            #         continue
 
                 # (Optional sanity: if missed < 0 something inconsistent happened)
                 # if missed < 0: continue

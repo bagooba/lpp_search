@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-#SBATCH -J plot_outputs
-#SBATCH -o ./SLURM_output/plot_outputs_%A_%a.txt
+#SBATCH -J full_search
+#SBATCH -o ./SLURM_output/full_search_%A_%a.txt
 
 #SBATCH --account=2016394
 #SBATCH --nodes=1
@@ -20,5 +20,7 @@ module load miniconda3
 source activate /users/malharris/miniconda3/envs/envRunningInJupyter
 
 # Run your Python script with the identifier as an argument
-python 05_generate_dv_pdf.py $SLURM_ARRAY_TASK_ID
+
+python 02_run_quick_singles.py $SLURM_ARRAY_TASK_ID
+python 03_run_periodic_search.py $SLURM_ARRAY_TASK_ID
 

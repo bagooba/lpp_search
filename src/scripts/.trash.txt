@@ -1,7 +1,7 @@
 Traceback (most recent call last):
-  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 88, in <module>
+  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 95, in <module>
     main(int(idx_str))
-  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 57, in main
+  File "/users/malharris/lpp_search/src/scripts/02_run_quick_singles.py", line 62, in main
     planet_df, _ = singles_search(t, cfg=cfg, run_1=True, pass_label="pass1")
                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/users/malharris/lpp_search/src/stages/search_singles.py", line 243, in singles_search

@@ -1,12 +1,14 @@
 # engines/pymc_core.py
 import os
-
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 import numpy as np
 import pandas as pd
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
 import copy
 
 import batman
@@ -18,6 +20,9 @@ import arviz as az
 
 from pytensor.graph import Op, Apply
 from pytensor import config as pt_config
+from core.target import Target
+
+from pathlib import Path
 
 import utils.config as con  # keep con.G only
 
@@ -41,13 +46,46 @@ def transit_mask_tensors(t, period, duration, T0, cad_minutes=None):
         buffer = cad_minutes / (24.0 * 60.0)
     return phase < (0.5 * duration + buffer)
 
+def _last_initvals_from_trace(trace):
+    post = trace.posterior
+    initvals = {}
+    for var in post.data_vars:
+        initvals[var] = np.array(post[var].values[0, -1])
+    return initvals
 
 
-def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
+def write_converged_fit_csv(target: Target, cand, fit_info):
+    out_dir = '/users/malharris/lpp_search/fit_stats/'
+
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    safe_id = cand.candidate_id().replace("/", "_").replace(" ", "_")
+    out_path = Path(out_dir+f"{safe_id}_attempt{int(fit_info['attempt']):02d}.csv")
+
+    row = {
+        "ticid": target.ticid,
+        "gaia_id": target.gaia_id,
+        "candidate_id": cand.candidate_id(),
+        "ptype": cand.ptype,
+        "attempt": fit_info["attempt"],
+        "draws_per_chain": fit_info["draws_per_chain"],
+        "tune_per_chain": fit_info["tune_per_chain"],
+        "chains": fit_info["chains"],
+        "cores": fit_info["cores"],
+        "rhat_max": fit_info["rhat_max"],
+    }
+
+    pd.DataFrame([row]).to_csv(out_path, index=False)
+    return out_path
+
+def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
     
     slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
-    cores = min(chains, slurm_cpus)
+
+    print('SLURM CPUs', slurm_cpus)
+    if cores is None:
+        cores = min(chains, slurm_cpus)
 
     # cores = min(chains, os.cpu_count() or 1) if cores is None else cores
 
@@ -58,18 +96,33 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
     # Use Metropolis for all free RVs
     # step = pm.Metropolis(vars=free_vars)
 
-    step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
+
+
+    prev_trace = None
 
     for attempt in range(1, max_attempts + 1):
-        print(f"Sampling attempt {attempt}...")
-        run = 2+attempt
-        try:
-            trace = pm.sample(step=step, draws=5000*(run), tune=2000*(run), chains=chains, cores = cores, 
-            # use a safe, explicit multiprocessing context
+        step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
+
+        run = attempt#+2
+        draws = 2000*(run)
+        tune = 5000*(run)
+        sample_kwargs = dict(
+            step=step,
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            cores=1,   # for now
+            random_seed=12345 + attempt,
+            return_inferencedata=True,
             mp_ctx=mp.get_context(mp_context),
-            # avoid identical RNG streams across chains
-            random_seed=list(range(chains)),
-)
+        )
+        
+        if prev_trace is not None:
+            sample_kwargs["initvals"] = _last_initvals_from_trace(prev_trace)
+
+        try:
+            
+            trace = pm.sample(**sample_kwargs)
 
         except Exception as e:
             print(f"Sampling crashed: {e}", flush=True)
@@ -79,9 +132,20 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
         summary = az.summary(trace)
         if (summary['r_hat'] < rhat_threshold).all():
             print(f"Converged on attempt {attempt}")
-            return trace, attempt
+
+            fit_info = {
+                "attempt": attempt,
+                "draws_per_chain": draws,
+                "tune_per_chain": tune,
+                "chains": chains,
+                "cores": 1,
+                "rhat_max": float(summary["r_hat"].max()),
+            }
+
+            return trace, fit_info
+        prev_trace = trace
 #         print('checking nans trace', trace.posterior['SNR'])
-        print('checking nanas summary', az.summary(trace))
+        print('checking nans summary', az.summary(trace))
         print(f"Attempt {attempt} failed to converge.")
 
     raise RuntimeError("Model did not converge after multiple attempts.")
@@ -122,7 +186,14 @@ class BatmanOp(Op):
             exp_time=cad / 24.0 / 60.0,
         )
 
-        outputs[0][0] = model.light_curve(params)
+                
+        flux = model.light_curve(params)
+
+        if not np.all(np.isfinite(flux)):
+            outputs[0][0] = np.zeros_like(flux) + 1e6  # force huge misfit
+        else:
+            outputs[0][0] = flux
+
 
     def grad(self, inputs, g_outputs):
         # For now, return zeros (no gradient)
@@ -322,13 +393,13 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         rp_rs = pm.TruncatedNormal("rp_rs", mu=pt.sqrt(Depth),
                                    sigma=pt.maximum(0.02, 0.5 * pt.sqrt(Depth)),
                                    lower=0, upper=1)
-        b = pm.TruncatedNormal("b", mu=0, sigma=0.01, lower=0, upper=1)
-
+        # b = pm.TruncatedNormal("b", mu=0, sigma=0.01, lower=0, upper=1)
+        b = pm.Uniform("b", 0, 1)
         depth = pm.Deterministic("depth", rp_rs**2)
 
         cosi = pm.Deterministic("cosi", pt.clip(b / a_rs, -1.0 + eps, 1.0 - eps))
         inc  = pm.Deterministic("inclination", pt.arccos(cosi) * 180.0 / np.pi)
-
+        inc_safe = pt.clip(inc, 0.1, 89.99)
         root = pt.sqrt(pt.clip(1.0 - b**2, eps, 1.0))
         T_dur0 = per / ((a_rs + eps) * np.pi)
         tau = pm.Deterministic("tau", rp_rs * T_dur0 / root)
@@ -357,21 +428,22 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         # if not fold_this:
         pm.Deterministic("SNR", SNR_final)
 
-        norm = pm.Deterministic("norm", median_pytensor(out_flux))
-
+        # norm = pm.Deterministic("norm", median_pytensor(out_flux))
+        norm = pm.Normal("norm", mu=1.0, sigma=0.01)
         if fold_this:
-            p_flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
+            print('folded')
+            p_flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc_safe, u1, u2, ecc, cad)
             pm.Normal("obs", mu=p_flux_model * norm, sigma=u_fit,observed=f_fit)
         else:
-            flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad)
+            flux_model = batman_op(t_fit, t0, per, rp_rs, a_rs, inc_safe, u1, u2, ecc, cad)
             pm.Normal("obs", mu=flux_model * norm, sigma=u_fit, observed=f_fit)
 
     with model:
         try:
-            trace, conv_attempt = sample_until_converged(model, mp_context="fork")
+            trace, fit_info = sample_until_converged(model, mp_context="fork", cores = 1)
             summary = extract_summary_dataframe(trace)
         except RuntimeError:
             return pd.DataFrame(columns=["mean","median","sd","hdi_16%","hdi_84%","r_hat"]), False, None
 
     # Keep plots off in core. The caller decides.
-    return summary, True, conv_attempt
+    return summary, True, fit_info

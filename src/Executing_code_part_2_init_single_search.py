@@ -111,11 +111,13 @@ def main(target):
         return
 #     print('catalog df', catalog_df)
 #     print('running first search!!!!')
+
+    print("file path: ", total_file_path[0])
     
     gc.collect()
     singles_df, sparams_df = singles_search(ticid, total_file_path[0], intransit = [], catalog_df = catalog_df, confidence = 0.5)   
     if len(singles_df)>0:
-        os.rename(target, target+'_check')
+        # os.rename(target, target+'_check')
         print('keeping this ticid: ', ticid)
         # gc.collect()
 
@@ -140,7 +142,7 @@ if __name__ == "__main__":
 
     time1 = tm.time()
     
-    target_files = sorted(glob.glob('../new_toi_data/target_*'))
+    target_files = sorted(glob.glob('../toi_data/target_*'))
     print('number of files: ', len(target_files), 'file number: ', file_num)
     file = target_files[file_num]
 #     print('factor: ', file_factor, ', running files_nums:', file_factor*8 , '-', min(len(target_files), (file_factor+1)*8))

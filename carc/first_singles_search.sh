@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #SBATCH -J start_singles_search
-#SBATCH -o ./SLURM_output/start_singles_search_%j.txt
+#SBATCH -o ./SLURM_output/start_singles_search_%A_%a.txt
 
 #SBATCH --account=2016394
 #SBATCH --nodes=1

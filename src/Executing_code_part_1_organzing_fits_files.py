@@ -47,9 +47,9 @@ from Functions_all import *
 
 
 
-all_tois = pd.read_csv('../data/PS_2026.02.17_18.13.58.csv', skiprows = 110)
+all_tois = pd.read_csv('/users/malharris/lpp_search/data/dr2_dr3_ticid_final.csv')
 
-gaia_ids = [all_tois['gaia_dr3_id'][x][9:] for x in range(len(all_tois)) if type(all_tois['gaia_dr3_id'][x]) == str]
+gaia_ids = [all_tois['gaia_dr3_id'][x] for x in range(len(all_tois)) if type(all_tois['gaia_dr3_id'][x]) == str]
 
 
 def mk_target_dir_mv_fits_file(fits_file_with_GAIAid, sector_df):
@@ -62,12 +62,12 @@ def mk_target_dir_mv_fits_file(fits_file_with_GAIAid, sector_df):
     if len(tic_id_index)>1:
         print(tic_id_index)
     ticid = int(sector_df['tic_id'][tic_id_index[0]][4:])
-    mkdir_if_doesnt_exist('../new_toi_data/', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
+    mkdir_if_doesnt_exist('/carc//', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
     os.rename(fits_file_with_GAIAid, '../new_toi_data/target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID)+'/'+fits_file_with_GAIAid.split('/')[-1])
     
     
 iii=0
-for file in glob.glob('../new_toi_data/s00*/*/*/*/*/*/*.fits'):
+for file in glob.glob('/easley/scratch/users/malharris/*/fits/*.fits'):
     gaia_id_check = set([g_id for g_id in gaia_ids if str(g_id) in file])
     if len(gaia_id_check)==1:
         mk_target_dir_mv_fits_file(file, all_tois)

@@ -620,7 +620,7 @@ def plot_lc_with_bboxes(lc_object, bboxes, ax=None, epoch = 0, **kwargs):
 
 
 
-def DT_analysis(time, flux, flux_err, confidence, DT_Quite=True, is_flat = True):
+def DT_analysis(time, flux, flux_err, confidence, DT_Quiet=True, is_flat = True):
     """ 
     @author: D. Dragomir, P.Steimle
 
@@ -634,7 +634,7 @@ def DT_analysis(time, flux, flux_err, confidence, DT_Quite=True, is_flat = True)
     
 #     confidence = 1-np.exp(-0.15*snr)
     print('time len', len(time))
-    if DT_Quite == True:
+    if DT_Quiet == True:
         save_stdout = sys.stdout
         save_stderr = sys.stderr
         sys.stdout = open('.trash.txt', 'w')

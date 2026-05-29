@@ -32,7 +32,7 @@ from utils.queue import enqueue
 
 from stages.search_singles import singles_search, SinglesSearchConfig
 from utils.handling_data import normalize_depth_to_fractional
-from engines.pyMC_core import pymc_fit_candidate
+from engines.pyMC_core import pymc_fit_candidate, write_converged_fit_csv
 from utils.check_singles_recovery import check_singles_against_periodic_candidate
 
 TARGET_GLOB = "../../toi_data/target_*"   # adjust
@@ -202,7 +202,7 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
     attempt_id = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     upsert_run_json(run_path, {"status": {"stage": "pymc_fit", "state": "running", "attempt_id": attempt_id}})
 
-    summary_df, ok, _ = pymc_fit_candidate(target, cand, time, flux, unc, verbose=verbose)
+    summary_df, ok, fit_info = pymc_fit_candidate(target, cand, time, flux, unc, verbose=verbose)
 
     print('ok? ', ok)
 
@@ -212,6 +212,10 @@ def fit_and_attach(target: Target, cand: PlanetCandidate, time, flux, unc, run_p
         cand.mark_fitted()
         print('summary')
         print(summary_df)
+
+        stats_csv = write_converged_fit_csv(target, cand, fit_info)
+        print(f"wrote converged fit stats to {stats_csv}")
+
 
         # Update working hypothesis from PyMC medians
         cand.t0_days = _summary_median(cand, "t0", fallback=cand.t0_days)
@@ -426,7 +430,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
                 # optional: also clear any derived products you might store
                 # "dt_events_pass2_summary": [],
 })
-            singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.55, plot_events=False, verbose=False)
+            singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.75, plot_events=False, verbose=False)
             singles_search(
                 target,
                 cfg=singles_cfg,
@@ -506,11 +510,13 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
     # final_defaults = [c for c in final_candidates if c.default == True and c.fit_is_current]
  
-    per_target_csv = write_final_candidates_csv(target, final_candidates)
-    append_global_candidates_csv(final_candidates, target, global_csv_path)
+    per_target_csv = None
+    if len(final_candidates)>0:
+        per_target_csv = write_final_candidates_csv(target, final_candidates)
+        append_global_candidates_csv(final_candidates, target, global_csv_path)
 
-    # Update stage
-    target.set_stage(PipelineStage.FITTED)
+        # Update stage
+        target.set_stage(PipelineStage.FITTED)
     enqueue("DONE_FOUND", target.ticid)
     upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "done", "finished_at": datetime.now().isoformat()}})
     print(f"[DONE] {target.root_dir.name}: wrote {per_target_csv} and appended to {global_csv_path}")
@@ -525,6 +531,11 @@ def main(idx: int) -> None:
     root = Path(dirs[idx])
     target = Target.from_dir(root)
     # print('Target:', target)
+
+    # if not target.stage_at_least(PipelineStage.SEARCHED):
+    #     print(f"[FATAL] {root.name}: need DT pass‑1 first (stage < SEARCHED). Run script 02.")
+    #     sys.exit(3)
+
 
     global_csv = Path.cwd() / "all_final_candidates.csv"
     run_fit_refine_for_target(target, global_csv)

@@ -3,7 +3,7 @@
 #SBATCH -J organizing_data
 #SBATCH -o ./SLURM_output/organizing_data_%j.txt
 
-#SBATCH --account=2016394f
+#SBATCH --account=2016394
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=45:00:00

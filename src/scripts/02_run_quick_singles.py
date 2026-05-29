@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+
+
+# print("TOP OF FILE BEFORE IMPORTS", flush=True)
+
 import glob
 import os
 import sys
@@ -31,6 +35,7 @@ def _has_merged_data(target: Target, flavour: str) -> bool:
     return any(rd.glob(f"*{flavour}*_*total.csv")) or any(rd.glob("*total.csv"))
 
 def main(idx):
+    print('running something')
     dirs = sorted(glob.glob(TARGET_GLOB))
     if not (0 <= idx < len(dirs)):
         print(f"[FATAL] idx={idx} out of range for {len(dirs)} targets.")
@@ -45,8 +50,7 @@ def main(idx):
         print(f"[{root.name}] Not ready (no merged total CSV). Skipping.")
         return
 
-
-    cfg = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.45, plot_events=False, verbose=False)
+    cfg1 = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.65, plot_events=False, verbose=False)
     # Optional: if you want consistent per-run artifacts, uncomment:
     run_id = t.new_run_id()
 
@@ -54,7 +58,7 @@ def main(idx):
 
 
     # Otherwise (simpler): let singles_search manage its own run context
-    planet_df, _ = singles_search(t, cfg=cfg, run_1=True, pass_label="pass1")
+    planet_df, _ = singles_search(t, cfg=cfg1, run_1=True, pass_label="pass1")
     print('planet_df', planet_df)
 
     found = bool(getattr(t, "dt_prelim_found", False))
@@ -81,6 +85,8 @@ def main(idx):
 
 
 if __name__ == "__main__":
+    print('what is wrong?')
+
     idx_str = os.environ.get("SLURM_ARRAY_TASK_ID") or (sys.argv[1] if len(sys.argv) > 1 else None)
     if idx_str is None:
         print("Usage: python scripts/02_run_quick_singles.py <index>  # or SLURM_ARRAY_TASK_ID")

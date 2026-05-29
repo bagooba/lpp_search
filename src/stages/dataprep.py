@@ -7,7 +7,6 @@ import glob
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from astropy.io import fits as apf
 from astropy.stats import sigma_clip
 from astropy import units

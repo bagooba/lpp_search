@@ -10,7 +10,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.target import Target
+from core.target import Target, PipelineStage
 from utils.find_total_csv import find_total_csv
 
 # Your DV plotting lives here (we'll add it next)
@@ -100,7 +100,15 @@ def main(idx: int) -> None:
 
     root = Path(dirs[idx])
     target = Target.from_dir(root)
+
+    if not target.stage_at_least(PipelineStage.FITTED):
+        print(f"[FATAL] {root.name}: need to fit data first (stage < FITTED). Run script 04.")
+        sys.exit(3)
+
     out = run_for_target(target)
+
+    target.set_stage(PipelineStage.REPORTED)
+
     print(f"[DONE] wrote {out}")
 
 

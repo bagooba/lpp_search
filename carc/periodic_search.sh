@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #SBATCH -J periodic_searches
-#SBATCH -o ./SLURM_output/periodic_searches_%j.txt
+#SBATCH -o ./SLURM_output/periodic_searches_%A_%a.txt
 
 #SBATCH --account=2016394
 #SBATCH --nodes=1

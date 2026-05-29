@@ -13,3 +13,5 @@ test/.trash.txt
 data/dr2_dr3_ticid_final.parquet
 data/dr2_dr3_ticid_final.csv
 runs/
+DV_reports/
+fit_stats/

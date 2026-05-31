@@ -49,30 +49,41 @@ from Functions_all import *
 
 all_tois = pd.read_csv('/users/malharris/lpp_search/data/dr2_dr3_ticid_final.csv')
 
-gaia_ids = [all_tois['gaia_dr3_id'][x] for x in range(len(all_tois)) if type(all_tois['gaia_dr3_id'][x]) == str]
+gaia_ids = [all_tois['dr3_source_id'][x] for x in range(len(all_tois))]
 
 
-def mk_target_dir_mv_fits_file(fits_file_with_GAIAid, sector_df):
-    gaia_ID = fits_file_with_GAIAid.split('-')[2]
-    file_gaia = 'Gaia DR3 '+gaia_ID
+def mk_target_dir_mv_fits_file(fits_file_with_GAIAid, id_df):
+    gaia_ID = fits_file_with_GAIAid.split('-')[1]
+    print('checking gaia id', gaia_ID)
     
 
 #     print(gaia_ID, sector_df[sector_df['gaia_id'].astype(str)==gaia_ID]['tic_id'])
-    tic_id_index = sector_df[sector_df['gaia_dr3_id'].astype(str)==file_gaia]['tic_id'].index
-    if len(tic_id_index)>1:
-        print(tic_id_index)
-    ticid = int(sector_df['tic_id'][tic_id_index[0]][4:])
-    mkdir_if_doesnt_exist('/carc//', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
-    os.rename(fits_file_with_GAIAid, '../new_toi_data/target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID)+'/'+fits_file_with_GAIAid.split('/')[-1])
+    tic_id_index = id_df[id_df['dr3_source_id'].astype(str)==gaia_ID]['tic_id'].index
+
+    ticid = str(id_df['tic_id'][tic_id_index[0]])
+    mkdir_if_doesnt_exist('/carc/scratch/projects/dragomir/dragomir2016394/search_files/', 'target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID))
+    os.rename(fits_file_with_GAIAid, '/carc/scratch/projects/dragomir/dragomir2016394/search_files/target_tic-'+str(ticid)+'_gaiaID-'+str(gaia_ID)+'/'+fits_file_with_GAIAid.split('/')[-1])
     
-    
-iii=0
-for file in glob.glob('/easley/scratch/users/malharris/*/fits/*.fits'):
-    gaia_id_check = set([g_id for g_id in gaia_ids if str(g_id) in file])
-    if len(gaia_id_check)==1:
-        mk_target_dir_mv_fits_file(file, all_tois)
-        iii+=1
-        if iii%10 == 0:
-            print(iii)
-    elif len(gaia_id_check)>1:
-        print('weird', gaia_id_check)
+
+def main(gaia_ids):
+
+    for g_id in gaia_ids:
+        file_lst = glob.glob('/carc/scratch/projects/dragomir/dragomir2016394/mdwarfs/*/fits/*.fits')
+        good_files = [file for file in file_lst if str(g_id) in file]
+        print('checking files', good_files)
+        for file in good_files:
+            mk_target_dir_mv_fits_file(file, all_tois)
+
+
+
+if __name__ == "__main__":
+    # total = len(gaia_ids)
+    # lst_len = np.ceil(total/5000)
+    idx_str = os.environ.get("SLURM_ARRAY_TASK_ID") or (sys.argv[1] if len(sys.argv) > 1 else None)
+    print('indx string', idx_str)
+    if idx_str is None:
+        print("Usage: python E*organizing_fits_files.py <index>  # or SLURM_ARRAY_TASK_ID")
+        sys.exit(1)
+    else:
+        run = int(7261*float(idx_str))
+        main(gaia_ids[run:run+7261])

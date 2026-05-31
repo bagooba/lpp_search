@@ -298,8 +298,10 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
         planet_df = build_planet_df_from_final_csv(final_csv)
 
     total_csv = find_total_csv(target.root_dir, target.data_source.value)
-    df = pd.read_csv(total_csv).dropna(subset=["FLUX"])
-    time, flux, err, trend, raw, raw_err, bkg = [np.array(df[col]) for col in ['TIME', 'FLUX', 'FLUX_ERR', 'FLUX_TREND', 'RAW_FLUX', 'RAW_FLUX_ERR', 'BKG_FLUX']]
+    df = pd.read_csv(total_csv).dropna(subset=["FLUX", "TIME"])
+    time, flux, err, trend, raw, raw_err, bkg = [np.array(df[ col]) for col in ['TIME', 'FLUX', 'FLUX_ERR', 'FLUX_TREND', 'RAW_FLUX', 'RAW_FLUX_ERR', 'BKG_FLUX']]
+    norm_flux = np.nanmedian(flux)
+    flux, err = flux/norm_flux, err/norm_flux
     if intransit is None or (isinstance(intransit, (list, tuple)) and len(intransit) == 0):
         intransit = np.zeros(len(time), dtype=bool)
     else:
@@ -557,7 +559,7 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
             if planet["Ptype"] == "Single":
                 epochs = np.array([planet["T0"]], dtype=float)
             else:
-                # print('checking ', min_vals, max_vals, planet["T0"], planet["Period"])
+                print('checking ', min_vals, max_vals, planet["T0"], planet["Period"])
                 epochs = find_t0_vals_within_time(min_vals, max_vals, planet["T0"], planet["Period"])
 #     print('should be sorted times', min_t, epochs, max_t)
 

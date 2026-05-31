@@ -175,7 +175,7 @@ def _winner_key(c: PlanetCandidate) -> Tuple:
     snr = _snr_med(c)
     P = _period(c)
     per_score = 0.0 if P is None else -float(P)  # shorter is better as tie-breaker
-    return (sig, fit, snr, rhat_ok, per_score)
+    return (sig, fit, rhat_ok, snr, per_score)
 
 
 # ---------- main entrypoint ----------

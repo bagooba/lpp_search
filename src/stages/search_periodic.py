@@ -39,7 +39,7 @@ class PeriodicSearchConfig:
     flavour: str = "TGLC"
 
     # strict stop thresholds (active behavior)
-    min_snr: float = 10.0
+    min_snr: float = 8.5
     min_sde: float = 10.0
 
     # caps
@@ -173,12 +173,12 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
     #         1e-5,
     #         np.std(power_final),
     #         sst.median_abs_deviation(results.power)
-    #     ])
+        # ])
 
     # snr_arr = power_final / (mad / 0.67)
     # snr = float(snr_arr[idx])
 
-    local_intransit = model.transit_mask(time, period, duration, t0)
+    local_intransit = model.transit_mask(time, period, duration, t0+0.5)
     scatter = np.std(flux[~local_intransit])
 
     
@@ -200,8 +200,7 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
         n_transits_obs = 0
         counts_total = 0
 
-
-    snr = np.sqrt(counts_total) * depth / scatter if scatter > 0 else 0.0
+    snr = np.sqrt(n_transits_obs) * depth / scatter if scatter > 0 else 0.0
 
     if cfg.use_seed_periods: 
 
@@ -310,7 +309,8 @@ def run_bls(model, durations, cfg, time_span_days, period_grid=None, max_per=Non
         return model.autopower(durations, frequency_factor=freq_factor, maximum_period=max_per)
     else:
         # seed window
-        return model.power(period_grid, durations)
+        # print('durations')
+        return model.power(period_grid, durations[durations<min(period_grid)])
 
 def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = None,
                      cfg=PeriodicSearchConfig(),

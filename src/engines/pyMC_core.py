@@ -78,14 +78,14 @@ def write_converged_fit_csv(target: Target, cand, fit_info):
     pd.DataFrame([row]).to_csv(out_path, index=False)
     return out_path
 
-def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
+def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
     # Get all free random variables in the model
     
     slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
     print('SLURM CPUs', slurm_cpus)
     if cores is None:
-        cores = min(chains, slurm_cpus)
+        cores = max(chains, slurm_cpus)
 
     # cores = min(chains, os.cpu_count() or 1) if cores is None else cores
 
@@ -100,18 +100,19 @@ def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=4,c
 
     prev_trace = None
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, 1+max_attempts):
         step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
 
-        run = attempt#+2
-        draws = 2000*(run)
-        tune = 5000*(run)
+        run = attempt-1
+        draws = 4000+(2000*run)
+        tune = 5000+(2500*run)
+
         sample_kwargs = dict(
             step=step,
             draws=draws,
             tune=tune,
             chains=chains,
-            cores=1,   # for now
+            cores=cores,   # for now
             random_seed=12345 + attempt,
             return_inferencedata=True,
             mp_ctx=mp.get_context(mp_context),
@@ -138,7 +139,7 @@ def sample_until_converged(model, max_attempts=5, rhat_threshold=1.1, chains=4,c
                 "draws_per_chain": draws,
                 "tune_per_chain": tune,
                 "chains": chains,
-                "cores": 1,
+                "cores": cores,
                 "rhat_max": float(summary["r_hat"].max()),
             }
 
@@ -155,9 +156,11 @@ class BatmanOp(Op):
     itypes = [pt.dvector, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar, pt.dscalar]
     otypes = [pt.dvector]
 
+    def __init__(self):
+        pass  # nothing stored → picklable
 
-    def __init__(self, params):
-        self.params = params
+    # def __init__(self, params):
+    #     self.params = params
 
     def make_node(self, *inputs):
         # Convert all inputs to tensors if they aren't already
@@ -169,15 +172,19 @@ class BatmanOp(Op):
     def perform(self, node, inputs, outputs):
         time, t0, per, rp_rs, a_rs, inc, u1, u2, ecc, cad = inputs
 
-        params = copy.copy(self.params)
+        # params = copy.copy(self.params)
 
-        params.t0 = float(t0)
+        params = batman.TransitParams()
+
+        params.t0  = float(t0)
         params.per = float(per)
-        params.rp = float(rp_rs)
-        params.a  = float(a_rs)
+        params.rp  = float(rp_rs)
+        params.a   = float(a_rs)
         params.inc = float(inc)
         params.ecc = float(ecc)
+        params.w   = 90.0
         params.u   = [float(u1), float(u2)]
+        params.limb_dark = "quadratic"
 
         model = batman.TransitModel(
             params,
@@ -201,7 +208,7 @@ class BatmanOp(Op):
     
 
 def prepare_fit_data(time, flux, unc, candidate):
-    mask = np.isnan(time) | np.isnan(flux) #| np.isnan(unc)
+    mask = np.isnan(time) | np.isnan(flux) | np.isnan(unc)
     time, flux, unc = time[~mask], flux[~mask], unc[~mask]
 
     cad = np.nanpercentile(np.clip(np.diff(np.unique(time))*60.*24., 200/60, 30), 95)  # minutes
@@ -262,7 +269,7 @@ def initialize_batman_params(params, t0, per, depth, ld_q):
 
 
 
-def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_ld_fixed=True):
+def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_ld_fixed=True, max_runs =3):
     # --- star facts from Target ---
     target.load_state()
     if target.rho_star is None:
@@ -303,11 +310,11 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
 
     # count observed transits. Override from candidate if available.
-    nobs_est = 0
+    nobs_est = 1
     if type_fn == "Periodic":
         nobs_est = getattr(candidate, "n_transits_obs", None)
-        print('nobs_est from candidate:', nobs_est)
-        if nobs_est == 0:
+        print('nobs_est from candidate:', nobs_est, 'period: ', Per_in)
+        if nobs_est == 1:
             windows = make_windows_from_time_stamps(np.array(time), gap_threshold=0.5)
             tmp = 0
             for s, e in windows:
@@ -320,7 +327,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         fold_this = True
     ecc = 0.0
 
-    batman_params = initialize_batman_params(batman.TransitParams(), T0, Per_in if type_fn == "Periodic" else np.ptp(time), Depth, [float(u1), float(u2)])
+    # batman_params = initialize_batman_params(batman.TransitParams(), T0, Per_in if type_fn == "Periodic" else np.ptp(time), Depth, [float(u1), float(u2)])
 
     if fold_this:
         folded_phase = ((time - T0 + 0.5 * Per_in) % Per_in) - (0.5 * Per_in)
@@ -355,20 +362,22 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
     #     t_fit,
     #     supersample_factor=4,
     #     exp_time=cad / 24.0 / 60.0,)
-
-    batman_op = BatmanOp(batman_params)
-
+    if len(t_fit)<2:
+        return None, False, None
+    # batman_op = BatmanOp(batman_params)
+    batman_op = BatmanOp()
     with pm.Model() as model:
         t0 = pm.Uniform("t0", lower=T0 - pTdur, upper=T0 + pTdur)
 
         if type_fn == "Single":
             # initial a/R* guess uses a period guess
             k = np.sqrt(Depth)
-            per1 = float(np.max(t_fit) - np.min(t_fit))
+            per1 = float(np.nanmax(t_fit) - np.nanmin(t_fit))
             per2 = float(((3*np.pi / con.G / rho_star)**0.5) * (pTdur/np.pi/(1+k))**1.5)
             Per_guess = max(per1, per2)
             if Per_guess < 10:
                 Per_guess = 27.8
+            # max_runs = 1
 
             a_rs_init = float(((con.G * rho_star * (Per_guess ** 2)) / (3.0 * np.pi)) ** (1.0 / 3.0))
             a_rs = pm.TruncatedNormal("a_rs", mu=a_rs_init, sigma=5.0, lower=1.0, initval=a_rs_init)
@@ -406,24 +415,38 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
         dur = pm.Deterministic("dur", root * T_dur0 + tau)
 
         # masks
-        if type_fn == "Periodic":
-            intran_mask = transit_mask_tensors(t_fit, per, dur, t0, cad)
+        # if type_fn == "Periodic":
+        #     intran_mask = transit_mask_tensors(t_fit, per, dur, t0, cad)
+        # else:
+        #     intran_mask = pt.abs(t_fit - t0) < (dur / 2.0)
+        cad_days = cad / (24.0 * 60.0)
+
+        if type_fn == 'Single':
+
+
+            cad_days = cad / (24.0 * 60.0)
+            width = 0.5 * dur + cad_days
+            soft_mask = pt.exp(-0.5 * ((t_fit - t0) / width)**2)
         else:
-            intran_mask = pt.abs(t_fit - t0) < (dur / 2.0)
+            cad_days = cad / (24.0 * 60.0)
+            width = 0.5 * dur + cad_days
+            phase_dist = pt.abs(((t_fit - t0 + 0.5 * per) % per) - 0.5 * per)
+            soft_mask = pt.exp(-0.5 * (phase_dist / width)**2)
 
-        outran_mask = pt.invert(intran_mask)
+        # outran_mask = pt.invert(intran_mask)
+        out_weight = 1 - soft_mask
 
-        out_flux = f_fit * outran_mask
-        count = pt.maximum(pt.sum(outran_mask), 1)
+        out_flux = f_fit * out_weight
+        count = pt.maximum(pt.sum(out_weight), 1)
         mean_out = pt.sum(out_flux) / count
-        std_out = pt.sqrt(pt.sum(outran_mask * (f_fit - mean_out)**2) / count)
+        std_out = pt.sqrt(pt.sum(out_weight * (f_fit - mean_out)**2) / count)
 
-        N_tran = pt.sum(intran_mask)
+        N_tran = pt.sum(soft_mask)
         uq = pt.ones_like(f_fit) * std_out
-        sigs = pt.switch(N_tran > 0, pt.mean(pt.where(intran_mask, uq, 0)), 1e6)
+        sigs = pt.switch(N_tran > 0, pt.mean(pt.where(soft_mask, uq, 0)), 1e6)
 
-        SNR_val = pt.switch(pt.gt(N_tran, 0), pt.sqrt(N_tran) * depth / sigs, 0)
-        SNR_clipped = pt.clip(SNR_val, 0, 1e4)
+        SNR_val = pt.switch(pt.gt(N_tran, 0), pt.sqrt(N_tran) * depth / sigs, 0.01)
+        SNR_clipped = pt.clip(SNR_val, 0.01, 1e4)
         SNR_final = pt.where(pt.eq(SNR_clipped, 1e4), 1, SNR_clipped)
         # if not fold_this:
         pm.Deterministic("SNR", SNR_final)
@@ -440,8 +463,11 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
     with model:
         try:
-            trace, fit_info = sample_until_converged(model, mp_context="fork", cores = 1)
+            trace, fit_info = sample_until_converged(model, mp_context="fork", max_attempts=max_runs)
             summary = extract_summary_dataframe(trace)
+
+            del trace
+
         except RuntimeError:
             return pd.DataFrame(columns=["mean","median","sd","hdi_16%","hdi_84%","r_hat"]), False, None
 

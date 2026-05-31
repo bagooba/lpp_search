@@ -18,7 +18,7 @@ from stages.search_periodic import periodic_search, PeriodicSearchConfig
 from utils.run_json import upsert_run_json, append_run_json_list
 from core.transit_event import TransitEvent
 
-from utils.singles_periodicity import seed_periods_from_dt_events
+from utils.singles_periodicity import seed_periods_from_dt_events, keep_unique_period_indices
 from utils.queue import enqueue
 
 TARGET_GLOB = "../../toi_data/target_*"   # adjust as needed
@@ -73,11 +73,12 @@ def main(idx):
     raw = run_json.get("dt_events_raw_pass1", [])
     dt_events = [TransitEvent.from_dict(d) for d in raw] if isinstance(raw, list) else []    
 
-    windows = target.get_observation_windows()
+    # windows = target.get_observation_windows()
+
 
     seed_periods = seed_periods_from_dt_events(
         dt_events,
-        windows=windows   # <-- add this
+        # windows=windows   # <-- add this
     )
     
     print('seed periods check', seed_periods)
@@ -89,11 +90,22 @@ def main(idx):
     })
 
     cfg = PeriodicSearchConfig(flavour=target.data_source.value)
+    
+    indx = np.ones(len(seed_periods))
+    for i, sd in enumerate(seed_periods):
+        if sd<0.25:
+            indx[i] = 0
+
+    seed_periods = np.array(seed_periods)[indx.astype(bool)]
     if len(seed_periods) > 0:
         cfg.use_seed_periods = True
 
-        seeds = [list(np.array([0.5, 1, 2])*P) for P in seed_periods]
-        seed_periods = [item for sublist in seeds for item in sublist]
+        seeds = [np.array([0.5, 1, 2])*P for P in seed_periods]
+        sp = np.array([item for sublist in seeds for item in sublist])
+
+        uniq_indxs = keep_unique_period_indices(sp)
+        sp = sp[uniq_indxs]
+        seed_periods = list(sp[sp>0.25])
         print('all seeds:', seed_periods)
 
 

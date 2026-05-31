@@ -50,7 +50,7 @@ def main(idx):
         print(f"[{root.name}] Not ready (no merged total CSV). Skipping.")
         return
 
-    cfg1 = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.65, plot_events=False, verbose=False)
+    cfg1 = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.65, plot_events=True, verbose=False)
     # Optional: if you want consistent per-run artifacts, uncomment:
     run_id = t.new_run_id()
 

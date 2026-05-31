@@ -2,6 +2,26 @@
 import numpy as np
 from core.planet_candidate import PlanetCandidate
 
+def keep_unique_period_indices(periods, merge_tol=0.02):
+    kept = []
+
+    for i, Pi in enumerate(periods):
+        keep = True
+
+        for j in kept:
+            Pj = periods[j]
+
+            if abs(Pi - Pj) / Pj < merge_tol:
+                keep = False
+                break
+
+        if keep:
+            kept.append(i)
+
+    return kept
+
+
+
 
 # --- paste your existing functions here ---
 def prepping_singles_for_periodic_check(
@@ -21,7 +41,7 @@ def prepping_singles_for_periodic_check(
            if (depths is not None and len(depths) == len(t0_singles)) else None)
 
     baseline = float(t0[-1] - t0[0])
-    P_max_eff = float(P_max) if (P_max is not None) else max(1.0, baseline if (min_support <= 2) else (baseline / 2.0))
+    P_max_eff = float(P_max) if (P_max is not None) else max(1.0, baseline if (min_support <= 3) else (baseline / 3.0))
 
     if phase_win is None:
         if (dur is not None) and np.isfinite(dur).any():
@@ -54,108 +74,63 @@ def prepping_singles_for_periodic_check(
     return t0, dur, dep, groups, phase_win_eff
 
 
+
+def group_events_by_depth(events, ratio_max=1.25):
+    groups = []
+
+    for ev in events:
+        placed = False
+
+        for g in groups:
+            depths = [e.depth for e in g]
+            d_med = np.median(depths)
+
+            if abs(ev.depth - d_med) / (abs(d_med) + 1e-6) < (ratio_max - 1):
+                g.append(ev)
+                placed = True
+                break
+
+        if not placed:
+            groups.append([ev])
+
+    return groups
+
+
+
+
+
 def score_once_modes(
     t0, dur, dep, groups, phase_win,
-    min_support=3,
-    use_depth=True, depth_zmax=2.5, depth_ratio_max=1.75, depth_floor=5e-5,
-    local_span=0.02, local_n=41,
-    windows=None,
-    allow_missed=4,              # <-- NEW: set 0 for your "hard" principle
-    prefer_smaller_P_on_tie=True # <-- NEW: your stated preference
+    min_support=3, use_depth=True, depth_zmax=2.5, depth_ratio_max=1.75, depth_floor=5e-5,
+    local_span=0.02, local_n=41, merge_tol = 0.02
 ):
-    """
-    Score candidate period groups by folding event times and counting aligned members.
 
-    Key logic change (coverage-aware, hard-veto):
-      - If windows is provided, compute 'expected' epochs in-window for (T0_mode, P).
-      - Require expected - support <= allow_missed.
-        For your cadence-based principle, use allow_missed=0.
-
-    Parameters
-    ----------
-    t0 : array-like
-        Event times (days) for *all* singles.
-    dur, dep : arrays or None
-        Durations/depths aligned with t0 (optional).
-    groups : list of arrays
-        Candidate period clusters (from deltaT/m generation + grouping).
-    phase_win : float
-        Half-width in days for membership around the phase center.
-    windows : array-like shape (K,2) or None
-        Observed coverage windows [(start,end), ...] in days.
-    allow_missed : int
-        Allowed number of in-window expected epochs that are not present as events.
-        Set to 0 to enforce: "if it should have been observed, it doesn't exist".
-    prefer_smaller_P_on_tie : bool
-        If True, break exact ties by preferring smaller P.
-
-    Returns
-    -------
-    out : list of dict
-        Each dict has keys: P, T0, support, members, phase_rms, depth_med, depth_scat
-    """
     out = []
-    t0 = np.asarray(t0, dtype=float)
     if t0.size < min_support or len(groups) == 0:
         return out
-
-    # Ensure windows array shape is sane if provided
-    if windows is not None:
-        windows = np.asarray(windows, dtype=float)
-        if windows.ndim != 2 or windows.shape[1] != 2:
-            windows = None
-            # raise ValueError("windows must be an array of shape (K,2) with (start,end) rows")
 
     for g in groups:
         P0 = float(np.median(g))
         grid = P0 * np.linspace(1.0 - local_span, 1.0 + local_span, local_n)
-
-        best = None
-        best_members = None
+        best, best_members = None, None
 
         for P in grid:
-            if not (np.isfinite(P) and P > 0):
-                continue
-
-            # --- phase folding relative to an arbitrary anchor (t0[0]) ---
             phases = (t0 - t0[0]) % P
             phases = np.where(phases > P/2, phases - P, phases)
 
-            # Choose phase-center robustly
             center = np.median(phases)
-
-            # Residuals around center, wrapped to [-P/2, P/2]
-            resid = (phases - center) % P
-            resid = np.where(resid > P/2, resid - P, resid)
+            resid  = phases - center
 
             members = np.where(np.abs(resid) <= phase_win)[0]
             support = int(members.size)
             if support < min_support:
                 continue
 
-            # if windows is not None:
-            #     T0_mode = float(t0[0] + center)
 
-            #     expected = 0
-            #     for start, end in windows:
-            #         # integer k such that start <= T0 + kP <= end
-            #         k0 = int(np.ceil((start - T0_mode) / P))
-            #         k1 = int(np.floor((end   - T0_mode) / P))
-            #         if k1 >= k0:
-            #             expected += (k1 - k0 + 1)
+            phase_rms = float(np.sqrt(np.mean(resid[members]**2)))
 
-            #     missed = expected - support
-
-            #     # Your principle: allow_missed=0
-            #     if missed > allow_missed:
-            #         continue
-
-                # (Optional sanity: if missed < 0 something inconsistent happened)
-                # if missed < 0: continue
-
-            # --- depth consistency (unchanged) ---
+            # ---- depth consistency (leave mostly as-is) ----
             if use_depth and (dep is not None) and (members.size > 1):
-                dep = np.asarray(dep, dtype=float)
                 d_sup = dep[members]
                 d_med = float(np.median(d_sup))
                 scat  = 1.4826 * np.median(np.abs(d_sup - d_med))  # MAD
@@ -164,24 +139,21 @@ def score_once_modes(
                     dmax, dmin = float(np.max(d_sup)), float(np.min(d_sup))
                     if (dmax / max(dmin, depth_floor)) > depth_ratio_max:
                         continue
+
                 else:
                     z = np.abs(d_sup - d_med) / scat
                     if np.any(z > depth_zmax):
                         continue
 
-                depth_penalty = scat
+                depth_penalty = scat / (abs(d_med) + 1e-6)
             else:
                 d_med, depth_penalty = (np.nan, 0.0)
 
-            # --- score ---
-            phase_rms = float(np.sqrt(np.mean(resid[members]**2)))
+            coherence = 1.0 / (1.0 + depth_penalty)
+            score = support * coherence
 
-            # Primary: support. Then: tightness. Then: depth consistency.
-            # Tie-break: your preference (smaller P).
-            if prefer_smaller_P_on_tie:
-                key = (support, -phase_rms, -depth_penalty, -float(P))
-            else:
-                key = (support, -phase_rms, -depth_penalty)
+            key = (score, -phase_rms)
+
 
             if (best is None) or (key > best[0]):
                 best = (key, float(P), float(center), support, phase_rms, d_med, depth_penalty)
@@ -189,22 +161,27 @@ def score_once_modes(
 
         if best is None:
             continue
-
         _, P_star, center, support, phase_rms, d_med, depth_pen = best
 
         out.append({
-            "P": float(P_star),
-            "T0": float(t0[0] + center),
-            "support": int(support),
-            "members": np.array(best_members, dtype=int),
-            "phase_rms": float(phase_rms),
-            "depth_med": float(d_med),
-            "depth_scat": float(depth_pen) if np.isfinite(depth_pen) else np.nan,
+            'P': float(P_star),
+            'T0': float(t0[0] + center),
+            'support': int(support),
+            'members': np.array(best_members, dtype=int),
+            'phase_rms': float(phase_rms),
+            'depth_med': float(d_med),
+            'depth_scat': float(depth_pen) 
         })
 
-    # Keep your original final sort behavior
-    out.sort(key=lambda d: (-d["support"], d["phase_rms"]))
-    return out
+
+    # ---- sort by quality ----
+    out.sort(key=lambda d: (-d['support'], d['phase_rms']))
+
+    pers = [d['P'] for d in out]
+
+    kept_idx = keep_unique_period_indices(pers, merge_tol=merge_tol)
+
+    return [out[i] for i in kept_idx]
 
 
 def extract_all_modes_iterative(
@@ -225,7 +202,6 @@ def extract_all_modes_iterative(
         )
         if (t0_w.size < min_support) or (len(groups) == 0):
             break
-
 
         candidates = score_once_modes(
             t0_w, dur_w, dep_w, groups, phase_win,
@@ -249,7 +225,6 @@ def extract_all_modes_iterative(
     return accepted
 
 
-
 def periodic_modes_from_dt_events(
     events,
     *,
@@ -261,9 +236,7 @@ def periodic_modes_from_dt_events(
     use_depth=True,
     local_span=0.02,
     local_n=41,
-    windows=None,   # <-- add
 ):
-
     """
     Return periodic modes inferred from DT TransitEvent objects.
     Each mode is a dict with keys like P, T0, support, members, phase_rms, ...
@@ -287,8 +260,7 @@ def periodic_modes_from_dt_events(
         scorer_kwargs={
             "use_depth": use_depth,
             "local_span": local_span,
-            "local_n": local_n,
-            "windows": windows,   # <-- pass through
+            "local_n": local_n
         }
     )
     return modes
@@ -299,16 +271,28 @@ def seed_periods_from_dt_events(
     *,
     top_k=10,
     min_support=3,
-    windows=None,   # <-- add
     **mode_kwargs
 ):
-    modes = periodic_modes_from_dt_events(
-        events,
-        min_support=min_support,
-        windows=windows,    # <-- pass through
-        **mode_kwargs
-    )
+    """
+    Convenience wrapper: compute modes, then return top_k periods.
+    """
+    event_groups = group_events_by_depth(events)
+
+    modes = []
+
+    for g in event_groups:
+        if len(g) < min_support:
+            continue
+
+        modes.extend(
+            periodic_modes_from_dt_events(
+                g,
+                min_support=min_support,
+                **mode_kwargs
+            )
+        )
     return [float(m["P"]) for m in modes[:top_k]]
+
 
 
 def candidate_from_mode(mode, events, *, source, notes_prefix=""):
@@ -371,40 +355,3 @@ def mark_single_members_consumed(single_candidates, member_indices, periodic_can
         cur = sc.notes or ""
         add = f"{note_prefix}{periodic_candidate_id}"
         sc.notes = (cur + "; " + add) if cur else add
-
-def single_matches_periodic(s_t0, periodic_candidates, time_min, time_max, fixed_tol_days=0.05):
-    """
-    Return True if a single event time matches ANY epoch of fitted periodic candidates.
-    """
-    s_t0 = float(s_t0)
-
-    for p in periodic_candidates:
-        if not getattr(p, "fit_is_current", False):
-            continue
-
-        P  = p.period_days
-        t0 = p.t0_days
-        dur = p.duration_days
-
-        if P is None or t0 is None:
-            continue
-
-        P = float(P); t0 = float(t0)
-
-        if not np.isfinite(P) or P <= 0:
-            continue
-
-        # predict transit times in window
-        epochs = _epochs_in_window(time_min, time_max, t0, P)
-
-        # tolerance: max(fixed, 0.25 * duration)
-        if dur is not None and np.isfinite(dur):
-            tol = max(fixed_tol_days, 0.25 * float(dur))
-        else:
-            tol = fixed_tol_days
-
-        # check match
-        if np.min(np.abs(epochs - s_t0)) <= tol:
-            return True
-
-    return False

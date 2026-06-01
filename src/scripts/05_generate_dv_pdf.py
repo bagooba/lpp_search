@@ -105,7 +105,11 @@ def main(idx: int) -> None:
         print(f"[FATAL] {root.name}: need to fit data first (stage < FITTED). Run script 04.")
         sys.exit(3)
 
-    out = run_for_target(target)
+    try:
+        out = run_for_target(target)
+    except FileNotFoundError:
+        print('[SKIP] there is no final_candidates.csv here. Probably nothing was found')
+        sys.exit(4)
 
     target.set_stage(PipelineStage.REPORTED)
 

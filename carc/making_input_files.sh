@@ -6,13 +6,13 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=45:00:00
-#SBATCH --mem-per-cpu=32GB
+#SBATCH --mem-per-cpu=15GB
 #SBATCH --partition=general
 #SBATCH --mail-user malharris19@unm.edu 
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=0-301%20 # for 301*7261 of 1242178407 - 200 files
+#SBATCH --array=0-227%10 # for 2268816 in batches of 10K files
 
 cd ../src
 module load miniconda3

@@ -8,6 +8,245 @@ from core.planet_candidate import PlanetCandidate
 from utils.singles_periodicity import potential_periods_from_single_dt_events
 
 # ---------- small helpers ----------
+def _group_surviving_periodic_candidates_by_near_equal_period(
+    periodic_candidates: List[PlanetCandidate],
+    same_period_frac_tol: float,
+) -> List[List[PlanetCandidate]]:
+    """
+    Group surviving default periodic candidates by near-equal reported period.
+    This is intentionally NOT a harmonic-ratio grouping.
+    """
+    survivors = [
+        c for c in periodic_candidates
+        if getattr(c, "ptype", None) == "Periodic"
+        and _period(c) is not None
+        and getattr(c, "default", True)
+    ]
+
+    if len(survivors) < 2:
+        return []
+
+    survivors = sorted(survivors, key=lambda c: _period(c))
+
+    groups: List[List[PlanetCandidate]] = []
+    current_group: List[PlanetCandidate] = [survivors[0]]
+
+    for c in survivors[1:]:
+        current_period_days = _period(c)
+        reference_period_days = np.median([_period(x) for x in current_group])
+
+        frac_diff = abs(current_period_days - reference_period_days) / max(reference_period_days, 1e-12)
+
+        if frac_diff <= same_period_frac_tol:
+            current_group.append(c)
+        else:
+            groups.append(current_group)
+            current_group = [c]
+
+    groups.append(current_group)
+    return groups
+
+
+def _count_family_members_supporting_period(
+    members: List[PlanetCandidate],
+    proposed_period_days: float,
+    proposed_t0_days: float,
+    tol_days: float,
+) -> int:
+    """
+    Count how many family members contribute at least one observed transit time
+    that lands on the proposed shorter-period grid.
+    """
+    supporting_members = 0
+
+    for c in members:
+        observed_transit_times_days = _get_observed_transit_times(c)
+        if observed_transit_times_days is None or observed_transit_times_days.size == 0:
+            continue
+
+        phase_residual_days = (
+            (observed_transit_times_days - proposed_t0_days + 0.5 * proposed_period_days)
+            % proposed_period_days
+        ) - 0.5 * proposed_period_days
+
+        if np.any(np.abs(phase_residual_days) <= tol_days):
+            supporting_members += 1
+
+    return supporting_members
+
+
+def _flag_missing_base_period_families(
+    periodic_candidates: List[PlanetCandidate],
+    *,
+    same_period_frac_tol: float = 0.02,
+    min_group_size: int = 3,
+    min_support: int = 3,
+    min_supporting_members: int = 3,
+    shorter_period_fraction_max: float = 0.8,
+    support_tol_days: float = 0.05,
+) -> None:
+    """
+    Second pass:
+      - look only at surviving default periodic candidates
+      - group by near-equal reported period
+      - check whether a family implies a shorter missing base period
+      - annotate notes only; do not mark default=False here
+    """
+    period_families = _group_surviving_periodic_candidates_by_near_equal_period(
+        periodic_candidates=periodic_candidates,
+        same_period_frac_tol=same_period_frac_tol,
+    )
+
+    for members in period_families:
+        if len(members) < min_group_size:
+            continue
+
+        family_reported_period_days = np.array([_period(c) for c in members], dtype=float)
+        family_median_period_days = float(np.median(family_reported_period_days))
+
+        proposal = _infer_missing_base_period_from_cluster(
+            members,
+            min_support=min_support,
+            perc_tol=0.02,
+            max_ratio=5,
+            P_min=0.25,
+            merge_tol=same_period_frac_tol,
+            support_tol_days=support_tol_days,
+        )
+
+        if proposal is None:
+            continue
+
+        proposed_period_days = float(proposal["period_days"])
+        proposed_t0_days = float(proposal["t0_days"])
+        proposed_support = int(proposal["support"])
+
+        if proposed_period_days > shorter_period_fraction_max * family_median_period_days:
+            continue
+
+        supporting_members = _count_family_members_supporting_period(
+            members=members,
+            proposed_period_days=proposed_period_days,
+            proposed_t0_days=proposed_t0_days,
+            tol_days=support_tol_days,
+        )
+
+        if supporting_members < min_supporting_members:
+            continue
+
+        add_str = ''
+        if min_supporting_members<3:
+            add_str = ' weakly? '
+        note = (
+            "alias_dedup: near-equal-period family"+add_str+"implies missing base period "
+            f"~{proposed_period_days:.6f} d "
+            f"(family_period~{family_median_period_days:.6f} d, "
+            f"support={proposed_support}, "
+            f"supporting_members={supporting_members})"
+        )
+
+        for c in members:
+            c.notes = (c.notes + "; " + note) if getattr(c, "notes", "") else note
+
+def _fraction_observed_transit_times_explained_by_ephemeris(
+    observed_transit_times_days: np.ndarray,
+    ephemeris_t0_days: float,
+    ephemeris_period_days: float,
+    tol_days: float,
+) -> float:
+    """
+    Fraction of observed transit times that fall on the ephemeris
+    (ephemeris_t0_days, ephemeris_period_days) within tol_days.
+    """
+    if (
+        observed_transit_times_days is None
+        or observed_transit_times_days.size == 0
+        or not np.isfinite(ephemeris_period_days)
+        or ephemeris_period_days <= 0
+    ):
+        return 0.0
+
+    phase_residual_days = (
+        (observed_transit_times_days - ephemeris_t0_days + 0.5 * ephemeris_period_days)
+        % ephemeris_period_days
+    ) - 0.5 * ephemeris_period_days
+
+    return float(np.mean(np.abs(phase_residual_days) <= tol_days))
+
+
+def _mutual_ephemeris_explainability(
+    a: PlanetCandidate,
+    b: PlanetCandidate,
+    tol_days: float,
+) -> Tuple[float, float]:
+    """
+    Returns
+    -------
+    fraction_a_explained_by_b : float
+        Fraction of a's observed transit times explained by b's ephemeris.
+    fraction_b_explained_by_a : float
+        Fraction of b's observed transit times explained by a's ephemeris.
+    """
+    a_observed_transit_times_days = _get_observed_transit_times(a)
+    b_observed_transit_times_days = _get_observed_transit_times(b)
+
+    if a_observed_transit_times_days is None or b_observed_transit_times_days is None:
+        return 0.0, 0.0
+
+    a_period_days = _period(a)
+    b_period_days = _period(b)
+
+    if a_period_days is None or b_period_days is None:
+        return 0.0, 0.0
+
+    fraction_a_explained_by_b = _fraction_observed_transit_times_explained_by_ephemeris(
+        observed_transit_times_days=a_observed_transit_times_days,
+        ephemeris_t0_days=_t0(b),
+        ephemeris_period_days=b_period_days,
+        tol_days=tol_days,
+    )
+
+    fraction_b_explained_by_a = _fraction_observed_transit_times_explained_by_ephemeris(
+        observed_transit_times_days=b_observed_transit_times_days,
+        ephemeris_t0_days=_t0(a),
+        ephemeris_period_days=a_period_days,
+        tol_days=tol_days,
+    )
+
+    return fraction_a_explained_by_b, fraction_b_explained_by_a
+
+
+
+
+def _implied_base_from_equal_period_t0s(
+    t0s: np.ndarray,
+    P: float,
+    tol_days: float = 0.1,
+    max_div: int = 5,
+) -> Optional[float]:
+    """
+    Given multiple t0 values for candidates with nearly the same reported period P,
+    check whether their phase offsets imply a smaller base period P/k.
+    Returns the best implied base period or None.
+    """
+    if t0s.size < 2 or not np.isfinite(P) or P <= 0:
+        return None
+
+    # phases in [0, P)
+    phases = np.sort(np.mod(t0s, P))
+
+    # try divisors k = 2..max_div, meaning base period = P/k
+    for k in range(2, max_div + 1):
+        Pbase = P / k
+
+        # take the first phase as reference
+        ref = phases[0]
+        resid = ((phases - ref + 0.5 * Pbase) % Pbase) - 0.5 * Pbase
+
+        if np.all(np.abs(resid) <= tol_days):
+            return float(Pbase)
+
+    return None
 
 def _best_support_for_period(
     t0s: np.ndarray,
@@ -243,7 +482,7 @@ def _get_observed_transit_times(
 
 
 
-def _shared_t0_overlap(a: PlanetCandidate, b: PlanetCandidate, tol_days: float) -> Tuple[int, int]:
+def _shared_observed_transit_time_overlap(a: PlanetCandidate, b: PlanetCandidate, tol_days: float) -> Tuple[int, int]:
     """
     Count overlaps between observed transit-time lists.
     Returns (n_overlap, n_minlist). If either list missing -> (0,0).
@@ -347,63 +586,34 @@ def alias_dedup_periodic_candidates(
         for j in range(i + 1, n):
             a, b = cands[i], cands[j]
 
-            # 1) Prefer observed transit-time overlap if available
-            overlap, denom = _shared_t0_overlap(a, b, tol_days=shared_t0_tol_days)
-            if denom > 0:
-                if (overlap / denom) >= shared_overlap_frac and _depth_consistent(a, b, ratio_max=depth_ratio_max):
+            # If both candidates have observed transit-time lists, use those directly.
+            a_observed_transit_times_days = _get_observed_transit_times(a)
+            b_observed_transit_times_days = _get_observed_transit_times(b)
+
+            if a_observed_transit_times_days is not None and b_observed_transit_times_days is not None:
+                if not _depth_consistent(a, b, ratio_max=depth_ratio_max):
+                    continue
+
+                overlap_count, overlap_denom = _shared_observed_transit_time_overlap(
+                    a, b, tol_days=shared_t0_tol_days
+                )
+
+                if overlap_denom > 0 and (overlap_count / overlap_denom) >= shared_overlap_frac:
                     union(i, j)
-                continue  # if we had lists, we don't need alias fallback
+                    continue
 
-            # 2) Fallback: harmonic period relation + ephemeris-phase check + depth consistency
-            if not _depth_consistent(a, b, ratio_max=depth_ratio_max):
-                print('not consistent depth')
+                fraction_a_explained_by_b, fraction_b_explained_by_a = _mutual_ephemeris_explainability(
+                    a, b, tol_days=shared_t0_tol_days
+                )
+
+                if (
+                    fraction_a_explained_by_b >= 0.85
+                    and fraction_b_explained_by_a >= 0.85
+                ):
+                    union(i, j)
+
                 continue
-
-            Pa, Pb = _period(a), _period(b)
-            if Pa is None or Pb is None:
-                continue
-
-            # stable ordering (also keep the matching t0s aligned with short/long)
-            if Pa <= Pb:
-                Pshort, Plong = Pa, Pb
-                t0short, t0long = _t0(a), _t0(b)
-            else:
-                Pshort, Plong = Pb, Pa
-                t0short, t0long = _t0(b), _t0(a)
-
-            ratio = Plong / Pshort
-
-            # look for small rational ratios up to 5 (tune if needed)
-            is_alias = False
-            for zz in range(1, 6):
-                for yy in range(1, 6):
-                    r = zz / yy
-                    if abs(ratio - r) <= 0.01:   # 1% tolerance
-                        is_alias = True
-                        break
-                if is_alias:
-                    break
-
-            if not is_alias:
-                continue
-
-            # define tol (duration-based if available, otherwise floor)
-            dura = _median(a, "dur", getattr(a, "duration_days", None))
-            durb = _median(b, "dur", getattr(b, "duration_days", None))
-            dur_ref = None
-            for d in (dura, durb):
-                if d is not None and np.isfinite(d):
-                    dur_ref = float(d) if dur_ref is None else min(dur_ref, float(d))
-
-            tol = max(
-                epoch_tol_floor_days,
-                epoch_tol_scale * (dur_ref if dur_ref is not None else epoch_tol_floor_days),
-            )
-
-            # phase alignment for aliases: long epoch should land on the short ephemeris
-            off = _phase_offset_days(t0long, t0short, Pshort)
-            if off <= tol:
-                union(i, j)    # build groups
+            # elif off
     groups = {}
     for i in range(n):
         r = find(i)
@@ -444,5 +654,15 @@ def alias_dedup_periodic_candidates(
             m.default = False
             note = f"alias_dedup: duplicate/alias of {winner_id}"
             m.notes = (m.notes + "; " + note) if getattr(m, "notes", "") else note
+
+    _flag_missing_base_period_families(
+            periodic_candidates,
+            same_period_frac_tol=0.02,
+            min_group_size=3,
+            min_support=3,
+            min_supporting_members=3,
+            shorter_period_fraction_max=0.8,
+            support_tol_days=shared_t0_tol_days,
+        )
 
     return periodic_candidates

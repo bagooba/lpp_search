@@ -1,5 +1,26 @@
 # engines/pymc_core.py
 import os
+from pathlib import Path
+
+job_id = os.environ.get("SLURM_ARRAY_JOB_ID", os.environ.get("SLURM_JOB_ID", "nojid"))
+task_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+user = os.environ.get("USER", "user")
+
+compiledir = Path(f"/scratch1/{user}/pytensor_{job_id}_{task_id}")
+compiledir.mkdir(parents=True, exist_ok=True)
+
+new_flags = [
+    f"compiledir={compiledir}",
+    "compile__wait=30",
+    "compile__timeout=1200",
+]
+
+existing_flags = os.environ.get("PYTENSOR_FLAGS", "")
+if existing_flags:
+    os.environ["PYTENSOR_FLAGS"] = existing_flags + "," + ",".join(new_flags)
+else:
+    os.environ["PYTENSOR_FLAGS"] = ",".join(new_flags)
+
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -20,6 +41,11 @@ import arviz as az
 
 from pytensor.graph import Op, Apply
 from pytensor import config as pt_config
+
+
+print("PYTENSOR compiledir:", pytpt_config.compiledir, flush=True)
+print("PYTENSOR_FLAGS:", os.environ.get("PYTENSOR_FLAGS"), flush=True)
+
 from core.target import Target
 
 from pathlib import Path
@@ -78,14 +104,14 @@ def write_converged_fit_csv(target: Target, cand, fit_info):
     pd.DataFrame([row]).to_csv(out_path, index=False)
     return out_path
 
-def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
+def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=1, mp_context=None):
     # Get all free random variables in the model
     
     slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
     print('SLURM CPUs', slurm_cpus)
     if cores is None:
-        cores = max(chains, slurm_cpus)
+        cores = min(chains, slurm_cpus)
 
     # cores = min(chains, os.cpu_count() or 1) if cores is None else cores
 
@@ -106,24 +132,31 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
         run = attempt-1
         draws = 4000+(2000*run)
         tune = 5000+(2500*run)
-
+        
         sample_kwargs = dict(
             step=step,
             draws=draws,
             tune=tune,
             chains=chains,
-            cores=cores,   # for now
+            cores=cores,
             random_seed=12345 + attempt,
             return_inferencedata=True,
-            mp_ctx=mp.get_context(mp_context),
         )
         
+        
+        if cores > 1 and mp_context is not None:
+            sample_kwargs["mp_ctx"] = mp.get_context(mp_context)
+
         if prev_trace is not None:
             sample_kwargs["initvals"] = _last_initvals_from_trace(prev_trace)
 
         try:
+            print(
+                f"sampling with chains={chains}, cores={cores}, mp_context={mp_context}, compiledir={os.environ.get('PYTENSOR_FLAGS')}",
+                flush=True,
+            )
             
-            trace = pm.sample(**sample_kwargs)
+            trace = pm.sample(  **sample_kwargs)
 
         except Exception as e:
             print(f"Sampling crashed: {e}", flush=True)
@@ -463,7 +496,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
     with model:
         try:
-            trace, fit_info = sample_until_converged(model, mp_context="fork", max_attempts=max_runs)
+            trace, fit_info = sample_until_converged(model, mp_context="forkserver", max_attempts=max_runs)
             summary = extract_summary_dataframe(trace)
 
             del trace

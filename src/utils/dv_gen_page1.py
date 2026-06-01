@@ -129,15 +129,17 @@ def build_planet_df_from_final_csv(final_csv: Path) -> pd.DataFrame:
 def format_candidate_table(planet_df, ax, max_rows = 10):
     planet_df['Depth'] = planet_df['Depth']*1000
     df_rounded = planet_df.round(4)
-    columns = ["#", "Type", "Period [d]", 't0 [TJD]', 'depth [ppt]', 'duration [h]']
+    tbl_columns = ["#", "Type", "Period [d]", 't0 [TJD]', 'depth [ppt]', 'duration [h]']
+    df_col_names = ['Planet_Num' , 'Ptype', 'Period', 'T0', 'Depth', 'Dur']
+    df_indices_df = [df.columns.get_loc(col) for col in df_col_names]
 
-    table_data = df_rounded.iloc[:, :len(columns)].values.tolist()
+    table_data = df_rounded.iloc[:, df_indices_df].values.tolist()
     # columns = df_rounded.columns.tolist()
     # Create the table
 
 
         
-    table = ax.table(cellText=table_data, colLabels=columns, loc='center')
+    table = ax.table(cellText=table_data, colLabels=tbl_columns, loc='center')
     # 2. Disable auto-font size and set the new size manually
     # table.auto_set_font_size(False)
     # table.set_fontsize(25)  # Change 14 to your desired size

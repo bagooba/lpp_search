@@ -13,8 +13,9 @@
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=0-123 # for 124 files
+#SBATCH --array=60-70 # for 124 files
 
+START_TIME=$SECONDS
 cd ../src/scripts
 module load miniconda3
 source activate /users/malharris/miniconda3/envs/envRunningInJupyter
@@ -23,4 +24,9 @@ source activate /users/malharris/miniconda3/envs/envRunningInJupyter
 
 python 02_run_quick_singles.py $SLURM_ARRAY_TASK_ID
 python 03_run_periodic_search.py $SLURM_ARRAY_TASK_ID
+python 04_run_fit_refine.py $SLURM_ARRAY_TASK_ID
+python 05_generate_dv_pdf.py $SLURM_ARRAY_TASK_ID
 
+ELAPSED=$(( SECONDS - START_TIME ))
+
+printf "Total runtime: %02d:%02d:%02d\n" $((ELAPSED/3600)) $((ELAPSED%3600/60)) $((ELAPSED%60))

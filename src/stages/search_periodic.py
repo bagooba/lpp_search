@@ -39,7 +39,7 @@ class PeriodicSearchConfig:
     flavour: str = "TGLC"
 
     # strict stop thresholds (active behavior)
-    min_snr: float = 8.5
+    min_snr: float = 10.
     min_sde: float = 10.0
 
     # caps
@@ -55,17 +55,20 @@ class PeriodicSearchConfig:
     max_widen_factor: int = 5
 
     # repeat-ephemeris tolerances (clear names; no eps)
-    period_rel_tol: float = 1e-3
+    period_rel_tol: float = 0.04
     epoch_tol_floor_days: float = 0.02
     epoch_tol_frac_of_duration: float = 0.25  # duration-scaled (your preference)
 
+    power_baseline_kernel: int = 25
+    # use_iteration_limit_for_threshold_failures = False  # optional continue if threshold failure if you want it
+
     # optional seeded pre-pass later (off by default)
     use_seed_periods: bool = False
-    seed_window_frac: float = 0.02  # +/- 5% around seed periods
-    seed_grid_size: int = 2500           # how fine to scan within the window
+    seed_window_frac: float = 0.01  # +/- 5% around seed periods
+    seed_grid_size: int = 150           # how fine to scan within the window
 
-    power_baseline_kernel: int = 25
-    use_iteration_limit_for_threshold_failures = False  # optional continue if threshold failure if you want it
+
+
 
     df_unc = 1E-4
 
@@ -73,7 +76,9 @@ class PeriodicSearchConfig:
 
 def _offset_to_ephemeris(t: float, t0: float, P: float) -> float:
     """Absolute time offset of t from nearest epoch of ephemeris (t0, P)."""
-    return abs(t - _nearest_epoch_time(t, t0, P))
+    val = abs(t - _nearest_epoch_time(t, t0, P))
+    print("offset", val)
+    return val
 
 
 
@@ -200,23 +205,15 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
         n_transits_obs = 0
         counts_total = 0
 
-    snr = np.sqrt(n_transits_obs) * depth / scatter if scatter > 0 else 0.0
-
-    if cfg.use_seed_periods: 
-
-        if cfg.verbose:
-            print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr})")
-
-        if (snr is None) or (snr < cfg.min_snr):
-            return ("fail_threshold", None, period, t0, duration, None)
+    snr = np.sqrt(counts_total) * depth / scatter if scatter > 0 else 0.0
 
 
-    else: 
-        if cfg.verbose:
-            print(f"Candidate: P={period:.4f} d, SDE={sde:.2f} (min {cfg.min_sde}), SNR={snr:.2f} (min {cfg.min_snr})")
+    if cfg.verbose:
+        print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr}), SDE={sde:.2f} (min {cfg.min_sde})")
 
-        if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
-            return ("fail_threshold", None, period, t0, duration, None)
+    if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
+        print('period failed')
+        return ("fail_threshold", None, period, t0, duration, None)
 
     # single-like gate: mask and continue, but don't save
     if n_transits_obs <= 1:
@@ -344,7 +341,8 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
     durations = np.linspace(0.01, 0.5, 50)  # keep your preferred grid
 
     it = 0
-    while it < cfg.max_iters and len(accepted_events) < cfg.max_planets:
+    fails = 0
+    while it < cfg.max_iters and fails < 3:# and len(accepted_events) < cfg.max_planets:
         it += 1
 
         # residual data (mask stays full-length)
@@ -358,7 +356,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
         model = BoxLeastSquares(time_new, flux_new)
 
         # your standard global scan
-        max_per = min(50.0, np.ptp(time_new) * 4/5)
+        max_per = min(50.0, np.ptp(time_new) / 2)
 
         # Prepare data for BLS
         results =  run_bls(model, durations, cfg, np.ptp(time_new), period_grid=period_grid, max_per=max_per)
@@ -373,13 +371,13 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
             # - in the 'fail_threshold' branch, mask this peak and continue
             # - keep a counter to stop after N no-progress attempts.
 
-            if it<cfg.max_iters and cfg.use_iteration_limit_for_threshold_failures:
-                if cfg.verbose:
-                    print(f"Candidate failed threshold but max_iters not reached (it={it}, max_iters={cfg.max_iters}) - masking and continuing.")
-                intransit |= transit_mask(time, period, duration, t0, buffer = cfg.transit_mask_base_buffer_days)
-                continue
-            else:   
-                break
+            if cfg.verbose:
+                print(f"Candidate failed threshold but if fails<3 (fails = {fails}) - masking and continuing. (it={it})")
+            intransit |= transit_mask(time, period, duration, t0, buffer = cfg.transit_mask_base_buffer_days)
+            fails+=1
+            # else:   
+            #     print('breaking loop')
+            #     break
 
         # ---- SINGLE-LIKE (mask and continue, do not save) ----
         if msg == "mask_only":
@@ -404,28 +402,31 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
 
         # ---- ACCEPT (save event, mask, continue) ----
         if msg == "accept":
+            fails = 0
             # accepted-only rule
+
+            print('accepted period')
             accepted_events.append(ev)
 
             intransit |= transit_mask(time, period, duration, t0, cfg.transit_mask_base_buffer_days)
             continue
 
-
+    if fails>3:
+        print('consecutive failed periods')
     return accepted_events, intransit
 
 
 
 def run_seed_prepass_full_lc(time, flux, flux_err, cfg, seed_periods, accepted_events, intransit):
-    if not (cfg.use_seed_periods and seed_periods):
+    if not (len(seed_periods)>0):
         return accepted_events, intransit
 
     # one iteration per seed (keeps it short + non-biasing)
 
     seed_cfg = PeriodicSearchConfig(**cfg.__dict__)
     seed_cfg.max_iters = 1
-    seed_cfg.use_iteration_limit_for_threshold_failures = False  # keep strict stop inside the one step
 
-    for P0 in seed_periods:
+    for P0 in seed_periods[::-1]:
         grid = seed_period_grid(float(P0), cfg.seed_window_frac, cfg.seed_grid_size)
         accepted_events, intransit = using_BLS_search(
             time, flux, flux_err=flux_err,
@@ -434,8 +435,9 @@ def run_seed_prepass_full_lc(time, flux, flux_err, cfg, seed_periods, accepted_e
             cfg=seed_cfg,
             accepted_events=accepted_events
         )
-        if len(accepted_events) >= cfg.max_planets:
-            break
+        # intransit |= intransit_x
+        # if len(accepted_events) >= cfg.max_planets:
+            # break
 
     return accepted_events, intransit
 
@@ -501,9 +503,7 @@ def periodic_search(target, *, cfg=PeriodicSearchConfig(), seed_periods=None,
     accepted_events = []
     intransit = np.zeros_like(time, dtype=bool)
 
-    accepted_events, intransit = run_seed_prepass_full_lc(time, flux, flux_err, cfg, seed_periods, accepted_events, intransit)
 
-    cfg.use_seed_periods = False
     periodic_events = run_periodic_full_and_chunked(time, flux, flux_err, cfg, accepted_events=accepted_events, intransit=intransit)
     # Write periodic events into the run JSON (Option 2)
     payload_update = {

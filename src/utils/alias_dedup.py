@@ -5,9 +5,134 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 from core.planet_candidate import PlanetCandidate
-
+from utils.singles_periodicity import potential_periods_from_single_dt_events
 
 # ---------- small helpers ----------
+
+def _best_support_for_period(
+    t0s: np.ndarray,
+    P: float,
+    tol_days: float,
+) -> Tuple[int, Optional[float]]:
+    """
+    For a trial period P, try each observed t0 as the anchor epoch and return:
+      - maximum number of observed times supported
+      - best anchor t0
+    """
+    if t0s.size == 0 or not np.isfinite(P) or P <= 0:
+        return 0, None
+
+    best_support = 0
+    best_t0 = None
+
+    for t0 in t0s:
+        resid = ((t0s - t0 + 0.5 * P) % P) - 0.5 * P
+        support = int(np.sum(np.abs(resid) <= tol_days))
+
+        if support > best_support:
+            best_support = support
+            best_t0 = float(t0)
+
+    return best_support, best_t0
+
+
+def _infer_missing_base_period_from_cluster(
+    members: List[PlanetCandidate],
+    *,
+    min_support: int = 3,
+    perc_tol: float = 0.02,
+    max_ratio: int = 5,
+    P_min: float = 0.25,
+    merge_tol: float = 0.02,
+    support_tol_days: float = 0.05,
+) -> Optional[dict]:
+    """
+    Look at all observed transit times in a cluster and ask whether they imply
+    a plausible base period that is NOT already one of the candidate periods.
+
+    Returns
+    -------
+    proposal : dict or None
+        {
+            "period_days": best proposed missing base period,
+            "t0_days": best anchor epoch,
+            "support": number of observed epochs explained
+        }
+    """
+    all_t0s = []
+    existing_periods = []
+
+    for c in members:
+        tt = _get_observed_transit_times(c)
+        if tt is not None and tt.size > 0:
+            all_t0s.extend(tt.tolist())
+
+        P = _period(c)
+        if P is not None and np.isfinite(P) and P > 0:
+            existing_periods.append(float(P))
+
+    if len(all_t0s) < min_support:
+        return None
+
+    t0s = np.unique(np.asarray(all_t0s, dtype=float))
+    if t0s.size < min_support:
+        return None
+
+    trial_periods = potential_periods_from_single_dt_events(
+        t0s,
+        min_support=min_support,
+        perc_tol=perc_tol,
+        max_ratio=max_ratio,
+        P_min=P_min,
+    )
+
+    if trial_periods.size == 0:
+        return None
+
+    # Remove any period already represented by an existing candidate
+    truly_missing = []
+    for P in trial_periods:
+        already_present = any(
+            abs(P - P0) / max(P0, 1e-12) < merge_tol
+            for P0 in existing_periods
+        )
+        if not already_present:
+            truly_missing.append(float(P))
+
+    if len(truly_missing) == 0:
+        return None
+
+    best = None
+    for P in truly_missing:
+        support, best_t0 = _best_support_for_period(
+            t0s,
+            P,
+            tol_days=support_tol_days,
+        )
+
+        if support < min_support or best_t0 is None:
+            continue
+
+        # prefer higher support; among ties prefer shorter period
+        key = (support, -P)
+
+        if best is None or key > best["key"]:
+            best = {
+                "key": key,
+                "period_days": float(P),
+                "t0_days": float(best_t0),
+                "support": int(support),
+            }
+
+    if best is None:
+        return None
+
+    return {
+        "period_days": best["period_days"],
+        "t0_days": best["t0_days"],
+        "support": best["support"],
+    }
+
 def _get_summary(c: PlanetCandidate, var: str) -> Optional[dict]:
     d = getattr(c, "pymc_summary", None)
     if isinstance(d, dict):
@@ -288,9 +413,30 @@ def alias_dedup_periodic_candidates(
     for idx_list in groups.values():
         if len(idx_list) < 2:
             continue
+
         members = [cands[i] for i in idx_list]
+
+        missing_base = _infer_missing_base_period_from_cluster(
+            members,
+            min_support=3,
+            perc_tol=0.02,
+            max_ratio=5,
+            P_min=0.25,
+            merge_tol=0.02,
+            support_tol_days=shared_t0_tol_days,
+        )
+
         winner = max(members, key=_winner_key)
         winner_id = winner.candidate_id()
+
+        if missing_base is not None:
+            note = (
+                f"alias_dedup: cluster implies missing base period "
+                f"~{missing_base['period_days']:.6f} d "
+                f"(support={missing_base['support']})"
+            )
+            winner.notes = (winner.notes + "; " + note) if getattr(winner, "notes", "") else note
+
 
         for m in members:
             if m is winner:

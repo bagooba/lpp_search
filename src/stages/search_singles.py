@@ -268,7 +268,7 @@ def singles_search(target, *, cfg=SinglesSearchConfig(), run_1=True,
         pass
 
     # --- Optional plotting (kept here, not in helper) ---
-    if cfg.plot_events and bboxes:
+    if cfg.plot_events and len(bboxes)>0:
         # minimal shim compatible with plot_lc_with_bboxes
         shim = type("Obj", (), {})()
         shim.time = type("Arr", (), {"value": total_time})()
@@ -451,4 +451,5 @@ def singles_search(target, *, cfg=SinglesSearchConfig(), run_1=True,
 #     params_df = pd.DataFrame()  # keep empty for quick pass
 
 #     return event_df, params_df
+
 

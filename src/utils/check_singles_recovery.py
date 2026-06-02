@@ -69,4 +69,4 @@ def check_singles_against_periodic_candidate(
         "epoch_indices": epoch_indices,
         "n_matched": len(matched_indices),
         "n_unmatched": len(unmatched_indices),
-    }
+    }, 

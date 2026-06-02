@@ -43,45 +43,47 @@ def main(idx):
 
     root = Path(dirs[idx])
     ticid, gaia_id = Target.discover_ids_from_dirname(root)
-    t = Target(ticid=int(ticid), gaia_id=gaia_id, root_dir=root)
-    t.load_state()
+    target = Target(ticid=int(ticid), gaia_id=gaia_id, root_dir=root)
+    target.load_state()
 
-    if not _has_merged_data(t, flavour=t.data_source.value):
+
+
+    if not _has_merged_data(target, flavour=target.data_source.value):
         print(f"[{root.name}] Not ready (no merged total CSV). Skipping.")
         return
 
-    cfg1 = SinglesSearchConfig(flavour=t.data_source.value, confidence=0.75, plot_events=True, verbose=False)
+    cfg1 = SinglesSearchConfig(flavour=target.data_source.value, confidence=0.65, plot_events=True, verbose=False)
     # Optional: if you want consistent per-run artifacts, uncomment:
-    run_id = t.new_run_id()
+    run_id = target.new_run_id()
 
-    run_path = t.candidates_run_path(run_id)
+    run_path = target.candidates_run_path(run_id)
 
 
     # Otherwise (simpler): let singles_search manage its own run context
-    planet_df, _ = singles_search(t, cfg=cfg1, run_1=True, pass_label="pass1")
+    planet_df, _ = singles_search(target, cfg=cfg1, run_1=True, pass_label="pass1")
     print('planet_df', planet_df)
 
-    found = bool(getattr(t, "dt_prelim_found", False))
+    found = bool(getattr(target, "dt_prelim_found", False))
     print('found', found)
     if len(planet_df)>0:
-        t.dt_prelim_found = True
+        target.dt_prelim_found = True
 
     # Mark quick singles done
     
-    if not t.stage_at_least(PipelineStage.SEARCHED):
-        t.set_stage(PipelineStage.SEARCHED)
+    # if not t.stage_at_least(PipelineStage.SEARCHED1):
 
-    else:
+    # else:
         # already beyond SEARCHED (FITTED/REPORTED), leave it alone
-        t.save_state()
+        # t.save_state()
 
 
     if found:
-        enqueue("03", t.ticid)
+        enqueue("03", target.ticid)
     else:
-        enqueue("DONE_EMPTY", t.ticid)
+        enqueue("DONE_EMPTY", target.ticid)
 
-    print(f"[TIC {t.ticid}] {'FOUND' if found else 'no'} transit-like signal")
+    print(f"[TIC {target.ticid}] {'FOUND' if found else 'no'} transit-like signal")
+    target.set_stage(PipelineStage.SEARCHED1)
 
 
 if __name__ == "__main__":

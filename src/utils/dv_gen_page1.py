@@ -131,7 +131,7 @@ def format_candidate_table(planet_df, ax, max_rows = 10):
     df_rounded = planet_df.round(4)
     tbl_columns = ["#", "Type", "Period [d]", 't0 [TJD]', 'depth [ppt]', 'duration [h]']
     df_col_names = ['Planet_Num' , 'Ptype', 'Period', 'T0', 'Depth', 'Dur']
-    df_indices_df = [df.columns.get_loc(col) for col in df_col_names]
+    df_indices_df = [df_rounded.columns.get_loc(col) for col in df_col_names]
 
     table_data = df_rounded.iloc[:, df_indices_df].values.tolist()
     # columns = df_rounded.columns.tolist()
@@ -372,9 +372,9 @@ def creating_first_DV_report_page(target, planet_df, intransit=[]):
     subplot+=1
     
     
-    ymin2 = np.nanmin([np.percentile(flux, 2)])*0.99
+    ymin2 = np.nanmin([np.percentile(flux, 1)])*0.99
     #,1.-(max(planet_df['Depth']))]) #define y-axis limits by percentages to avoid using es 
-    ymax2 = np.percentile(flux,98)*1.01
+    ymax2 = np.percentile(flux,99)*1.01
     delta_y2 = np.abs(ymax2-ymin2)
     ymin2 = ymin2-(delta_y2*.01) #make sure ymin allows for all data        
 

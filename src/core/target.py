@@ -17,7 +17,8 @@ class PipelineStage(Enum):
     RAW = auto()
     EXTRACTED = auto()
     MERGED = auto()     # singles gate
-    SEARCHED = auto()   # quick singles done
+    SEARCHED1 = auto()   # quick singles done
+    SEARCHED2 = auto()   # periodic done
     FITTED = auto()   # MCMC fit run
     REPORTED = auto()   # DV report PDF made; candidate summary ready; ready for vetting and follow-up
 
@@ -246,9 +247,10 @@ class Target:
             PipelineStage.RAW: 0,
             PipelineStage.EXTRACTED: 1,
             PipelineStage.MERGED: 2,
-            PipelineStage.SEARCHED: 3,
-            PipelineStage.FITTED: 4,
-            PipelineStage.REPORTED: 5,
+            PipelineStage.SEARCHED1: 3,
+            PipelineStage.SEARCHED2: 4,
+            PipelineStage.FITTED: 5,
+            PipelineStage.REPORTED: 6,
         }
         return order.get(self.pipeline_stage, -1)
 
@@ -257,9 +259,11 @@ class Target:
             PipelineStage.RAW: 0,
             PipelineStage.EXTRACTED: 1,
             PipelineStage.MERGED: 2,
-            PipelineStage.SEARCHED: 3,
-            PipelineStage.FITTED: 4,
-            PipelineStage.REPORTED: 5,
+            PipelineStage.SEARCHED1: 3,
+            PipelineStage.SEARCHED2: 4,
+
+            PipelineStage.FITTED: 5,
+            PipelineStage.REPORTED: 6,
         }
         return order.get(self.pipeline_stage, -1) >= order.get(stage, 10)
     

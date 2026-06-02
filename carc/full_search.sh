@@ -5,7 +5,7 @@
 
 #SBATCH --account=2016394
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 #SBATCH --time=45:00:00
 #SBATCH --mem-per-cpu=8GB
 #SBATCH --partition=general
@@ -13,7 +13,7 @@
 #SBATCH --mail-type BEGIN
 #SBATCH --mail-type END
 #SBATCH --mail-type FAIL
-#SBATCH --array=60-70 # for 124 files
+#SBATCH --array=60-68# for 124 files
 
 START_TIME=$SECONDS
 cd ../src/scripts

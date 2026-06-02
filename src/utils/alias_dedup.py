@@ -1,11 +1,14 @@
 # utils/alias_dedup.py
 from __future__ import annotations
 import math
+import copy
+
 import numpy as np
 from typing import List, Tuple, Optional
 
 from core.planet_candidate import PlanetCandidate
 from utils.singles_periodicity import potential_periods_from_single_dt_events
+import utils.periodic_event_dedup as ped
 
 # ---------- small helpers ----------
 def _group_surviving_periodic_candidates_by_near_equal_period(
@@ -19,21 +22,21 @@ def _group_surviving_periodic_candidates_by_near_equal_period(
     survivors = [
         c for c in periodic_candidates
         if getattr(c, "ptype", None) == "Periodic"
-        and _period(c) is not None
+        and ped._period(c) is not None
         and getattr(c, "default", True)
     ]
 
     if len(survivors) < 2:
         return []
 
-    survivors = sorted(survivors, key=lambda c: _period(c))
+    survivors = sorted(survivors, key=lambda c: ped._period(c))
 
     groups: List[List[PlanetCandidate]] = []
     current_group: List[PlanetCandidate] = [survivors[0]]
 
     for c in survivors[1:]:
-        current_period_days = _period(c)
-        reference_period_days = np.median([_period(x) for x in current_group])
+        current_period_days = ped._period(c)
+        reference_period_days = np.median([ped._period(x) for x in current_group])
 
         frac_diff = abs(current_period_days - reference_period_days) / max(reference_period_days, 1e-12)
 
@@ -52,27 +55,28 @@ def _count_family_members_supporting_period(
     proposed_period_days: float,
     proposed_t0_days: float,
     tol_days: float,
-) -> int:
+) -> Tuple[int, List[PlanetCandidate]]:
     """
     Count how many family members contribute at least one observed transit time
     that lands on the proposed shorter-period grid.
     """
     supporting_members = 0
-
+    inc_members = []
     for c in members:
-        observed_transit_times_days = _get_observed_transit_times(c)
-        if observed_transit_times_days is None or observed_transit_times_days.size == 0:
+        obs_t0s = ped._observed_transit_times_days(c)
+        if obs_t0s is None or obs_t0s.size == 0:
             continue
 
         phase_residual_days = (
-            (observed_transit_times_days - proposed_t0_days + 0.5 * proposed_period_days)
+            (obs_t0s - proposed_t0_days + 0.5 * proposed_period_days)
             % proposed_period_days
         ) - 0.5 * proposed_period_days
 
         if np.any(np.abs(phase_residual_days) <= tol_days):
             supporting_members += 1
+            inc_members.append(c)
 
-    return supporting_members
+    return supporting_members, inc_members
 
 
 def _flag_missing_base_period_families(
@@ -84,7 +88,7 @@ def _flag_missing_base_period_families(
     min_supporting_members: int = 3,
     shorter_period_fraction_max: float = 0.8,
     support_tol_days: float = 0.05,
-) -> None:
+) -> List[Tuple[dict, List[PlanetCandidate], PlanetCandidate]]:
     """
     Second pass:
       - look only at surviving default periodic candidates
@@ -97,11 +101,14 @@ def _flag_missing_base_period_families(
         same_period_frac_tol=same_period_frac_tol,
     )
 
+    try_props = []
+
+
     for members in period_families:
         if len(members) < min_group_size:
             continue
 
-        family_reported_period_days = np.array([_period(c) for c in members], dtype=float)
+        family_reported_period_days = np.array([ped._period(c) for c in members], dtype=float)
         family_median_period_days = float(np.median(family_reported_period_days))
 
         proposal = _infer_missing_base_period_from_cluster(
@@ -124,14 +131,14 @@ def _flag_missing_base_period_families(
         if proposed_period_days > shorter_period_fraction_max * family_median_period_days:
             continue
 
-        supporting_members = _count_family_members_supporting_period(
+        supporting_members_count, sup_members = _count_family_members_supporting_period(
             members=members,
             proposed_period_days=proposed_period_days,
             proposed_t0_days=proposed_t0_days,
             tol_days=support_tol_days,
         )
 
-        if supporting_members < min_supporting_members:
+        if supporting_members_count < min_supporting_members:
             continue
 
         add_str = ''
@@ -142,137 +149,49 @@ def _flag_missing_base_period_families(
             f"~{proposed_period_days:.6f} d "
             f"(family_period~{family_median_period_days:.6f} d, "
             f"support={proposed_support}, "
-            f"supporting_members={supporting_members})"
+            f"supporting_members={supporting_members_count})"
         )
+
+        winner = sup_members[0]  # placeholder if you want something simple for now
+        try_props.append((proposal, sup_members, winner))
 
         for c in members:
             c.notes = (c.notes + "; " + note) if getattr(c, "notes", "") else note
-
-def _fraction_observed_transit_times_explained_by_ephemeris(
-    observed_transit_times_days: np.ndarray,
-    ephemeris_t0_days: float,
-    ephemeris_period_days: float,
-    tol_days: float,
-) -> float:
-    """
-    Fraction of observed transit times that fall on the ephemeris
-    (ephemeris_t0_days, ephemeris_period_days) within tol_days.
-    """
-    if (
-        observed_transit_times_days is None
-        or observed_transit_times_days.size == 0
-        or not np.isfinite(ephemeris_period_days)
-        or ephemeris_period_days <= 0
-    ):
-        return 0.0
-
-    phase_residual_days = (
-        (observed_transit_times_days - ephemeris_t0_days + 0.5 * ephemeris_period_days)
-        % ephemeris_period_days
-    ) - 0.5 * ephemeris_period_days
-
-    return float(np.mean(np.abs(phase_residual_days) <= tol_days))
+    return try_props
 
 
-def _mutual_ephemeris_explainability(
-    a: PlanetCandidate,
-    b: PlanetCandidate,
-    tol_days: float,
-) -> Tuple[float, float]:
-    """
-    Returns
-    -------
-    fraction_a_explained_by_b : float
-        Fraction of a's observed transit times explained by b's ephemeris.
-    fraction_b_explained_by_a : float
-        Fraction of b's observed transit times explained by a's ephemeris.
-    """
-    a_observed_transit_times_days = _get_observed_transit_times(a)
-    b_observed_transit_times_days = _get_observed_transit_times(b)
-
-    if a_observed_transit_times_days is None or b_observed_transit_times_days is None:
-        return 0.0, 0.0
-
-    a_period_days = _period(a)
-    b_period_days = _period(b)
-
-    if a_period_days is None or b_period_days is None:
-        return 0.0, 0.0
-
-    fraction_a_explained_by_b = _fraction_observed_transit_times_explained_by_ephemeris(
-        observed_transit_times_days=a_observed_transit_times_days,
-        ephemeris_t0_days=_t0(b),
-        ephemeris_period_days=b_period_days,
-        tol_days=tol_days,
-    )
-
-    fraction_b_explained_by_a = _fraction_observed_transit_times_explained_by_ephemeris(
-        observed_transit_times_days=b_observed_transit_times_days,
-        ephemeris_t0_days=_t0(a),
-        ephemeris_period_days=a_period_days,
-        tol_days=tol_days,
-    )
-
-    return fraction_a_explained_by_b, fraction_b_explained_by_a
-
-
-
-
-def _implied_base_from_equal_period_t0s(
-    t0s: np.ndarray,
-    P: float,
-    tol_days: float = 0.1,
-    max_div: int = 5,
-) -> Optional[float]:
-    """
-    Given multiple t0 values for candidates with nearly the same reported period P,
-    check whether their phase offsets imply a smaller base period P/k.
-    Returns the best implied base period or None.
-    """
-    if t0s.size < 2 or not np.isfinite(P) or P <= 0:
-        return None
-
-    # phases in [0, P)
-    phases = np.sort(np.mod(t0s, P))
-
-    # try divisors k = 2..max_div, meaning base period = P/k
-    for k in range(2, max_div + 1):
-        Pbase = P / k
-
-        # take the first phase as reference
-        ref = phases[0]
-        resid = ((phases - ref + 0.5 * Pbase) % Pbase) - 0.5 * Pbase
-
-        if np.all(np.abs(resid) <= tol_days):
-            return float(Pbase)
-
-    return None
 
 def _best_support_for_period(
     t0s: np.ndarray,
     P: float,
     tol_days: float,
-) -> Tuple[int, Optional[float]]:
+) -> Tuple[int, Optional[float], np.ndarray]:
     """
     For a trial period P, try each observed t0 as the anchor epoch and return:
       - maximum number of observed times supported
       - best anchor t0
+      - matched observed transit times for that anchor
     """
+    t0s = np.asarray(t0s, dtype=float)
+
     if t0s.size == 0 or not np.isfinite(P) or P <= 0:
-        return 0, None
+        return 0, None, np.array([], dtype=float)
 
     best_support = 0
     best_t0 = None
+    best_transit = np.array([], dtype=float)
 
     for t0 in t0s:
         resid = ((t0s - t0 + 0.5 * P) % P) - 0.5 * P
-        support = int(np.sum(np.abs(resid) <= tol_days))
+        matched = np.abs(resid) <= tol_days
+        support = int(np.sum(matched))
 
         if support > best_support:
             best_support = support
             best_t0 = float(t0)
+            best_transit = t0s[matched]
 
-    return best_support, best_t0
+    return best_support, best_t0, best_transit
 
 
 def _infer_missing_base_period_from_cluster(
@@ -302,13 +221,15 @@ def _infer_missing_base_period_from_cluster(
     existing_periods = []
 
     for c in members:
-        tt = _get_observed_transit_times(c)
+        tt = ped._observed_transit_times_days(c)
         if tt is not None and tt.size > 0:
             all_t0s.extend(tt.tolist())
-
-        P = _period(c)
-        if P is not None and np.isfinite(P) and P > 0:
-            existing_periods.append(float(P))
+        try:
+            P = ped._period(c)
+            if P is not None and np.isfinite(P) and P > 0:
+                existing_periods.append(float(P))
+        except KeyError:
+            continue
 
     if len(all_t0s) < min_support:
         return None
@@ -326,6 +247,7 @@ def _infer_missing_base_period_from_cluster(
     )
 
     if trial_periods.size == 0:
+        print('no trial periods - stop')
         return None
 
     # Remove any period already represented by an existing candidate
@@ -339,11 +261,12 @@ def _infer_missing_base_period_from_cluster(
             truly_missing.append(float(P))
 
     if len(truly_missing) == 0:
+        print('all trial periods already found - stop')
         return None
 
     best = None
     for P in truly_missing:
-        support, best_t0 = _best_support_for_period(
+        support, best_t0, mid_transit_times = _best_support_for_period(
             t0s,
             P,
             tol_days=support_tol_days,
@@ -360,6 +283,7 @@ def _infer_missing_base_period_from_cluster(
                 "key": key,
                 "period_days": float(P),
                 "t0_days": float(best_t0),
+                "matched_times_days": list(mid_transit_times),
                 "support": int(support),
             }
 
@@ -369,205 +293,146 @@ def _infer_missing_base_period_from_cluster(
     return {
         "period_days": best["period_days"],
         "t0_days": best["t0_days"],
+        "matched_times_days": best["matched_times_days"],
         "support": best["support"],
     }
 
-def _get_summary(c: PlanetCandidate, var: str) -> Optional[dict]:
-    d = getattr(c, "pymc_summary", None)
-    if isinstance(d, dict):
-        vv = d.get(var, None)
-        return vv if isinstance(vv, dict) else None
-    return None
+# ---------- considering singles ----------
 
-def _median(c: PlanetCandidate, var: str, fallback=None):
-    vv = _get_summary(c, var)
-    if vv and "median" in vv:
-        try:
-            return float(vv["median"])
-        except Exception:
-            pass
-    return fallback
-
-def _hdi16(c: PlanetCandidate, var: str, fallback=None):
-    vv = _get_summary(c, var)
-    if vv and "hdi_16%" in vv:
-        try:
-            return float(vv["hdi_16%"])
-        except Exception:
-            pass
-    return fallback
-
-def _max_rhat(c: PlanetCandidate) -> Optional[float]:
-    d = getattr(c, "pymc_summary", None)
-    if not isinstance(d, dict):
-        return None
-    vals = []
-    for vv in d.values():
-        if isinstance(vv, dict) and "r_hat" in vv:
-            try:
-                vals.append(float(vv["r_hat"]))
-            except Exception:
-                pass
-    return max(vals) if vals else None
-
-
-def _depth_med(c: PlanetCandidate) -> Optional[float]:
-    d = _median(c, "depth", getattr(c, "depth", None))
-    return None if d is None else float(d)
-
-
-def _signal_not_zero(c: PlanetCandidate, eps: float = 1e-6) -> bool:
+def _add_matching_singles_to_group(
+    group: list[PlanetCandidate],
+    extra_planet_candidates: list[PlanetCandidate] | None,
+    ) -> list[PlanetCandidate]:
     """
-    Your idea: reject periods that 'fit flat light curves'.
-    Implemented as: rp_rs (or depth) HDI lower bound must be > 0-ish.
+    Add singles to an existing group if they match duration OR depth
+    with at least one candidate already in the group.
+
+    This does NOT change grouping logic.
+    It only augments the group before period inference.
     """
-    rp_lo = _hdi16(c, "rp_rs", None)
-    if rp_lo is not None:
-        return rp_lo > eps
-    d_lo = _hdi16(c, "depth", None)
-    if d_lo is not None:
-        return d_lo > eps
-    # fallback: if no HDI, use median depth
-    d_med = _depth_med(c)
-    return (d_med is not None) and (float(d_med) > eps)
+    if extra_planet_candidates is None or len(extra_planet_candidates) == 0:
+        return list(group)
 
-def _snr_med(c: PlanetCandidate) -> float:
-    s = _median(c, "SNR", getattr(c, "snr", 0.0))
-    try:
-        return float(s)
-    except Exception:
-        return 0.0
+    augmented = list(group)
 
-def _period(c: PlanetCandidate) -> Optional[float]:
-    p = getattr(c, "period_days", None)
-    return None if p is None else float(p)
+    for extra in extra_planet_candidates:
+        for member in group:
+            if ped._duration_consistent(extra, member) or ped._depth_consistent(extra, member):
+                augmented.append(extra)
+                break
 
-def _t0(c: PlanetCandidate) -> float:
-    return float(getattr(c, "t0_days"))
+    return augmented
 
 
 
-def _phase_offset_days(t: float, t0: float, P: float) -> float:
+def _make_missing_base_refit_candidate(
+    winner: PlanetCandidate,
+    cluster: List[PlanetCandidate],
+    missing_base: dict,
+    ) -> PlanetCandidate:
     """
-    Distance (days) between t and nearest epoch implied by (t0,P)
+    Build a new PlanetCandidate to seed a refit at an inferred missing base period.
+
+    Strategy:
+      - clone the winner so the returned object matches the type/shape expected
+      - replace period_days with the inferred base period
+      - set t0_days from an observed transit time
+      - keep morphology (duration/depth) from robust cluster summaries if possible,
+        otherwise fall back to winner values
     """
-    x = (t - t0 + 0.5 * P) % P - 0.5 * P
-    return abs(x)
+    refit_cand = copy.deepcopy(winner)
+
+    new_period = float(missing_base["period_days"])
+    refit_cand.period_days = new_period
+
+    # collect all observed transit times from the augmented members
+    all_times = missing_base['matched_times_days']
+
+    all_times = sorted(set(all_times))
+    
+
+    # t0 choice:
+    # for a periodic candidate, any observed transit center on the new ephemeris is a valid epoch anchor.
+    # simplest/safest seed is the earliest observed transit time.
+    if len(all_times) > 0:
+        refit_cand.t0_days = all_times[0]
+        refit_cand.transit_times_days = all_times
+        refit_cand.n_transits_obs = len(all_times)
+    else:
+        # fallback if somehow no observed times are available
+        refit_cand.t0_days = getattr(winner, "t0_days", None)
+
+    # robust morphology from the periodic cluster only
+    cluster_durations = np.array([ped._duration_days(c) for c in cluster])
+    cluster_depths = np.array([ped._depth_med(c) for c in cluster])
 
 
-# ---------- clustering criteria ----------
-def _get_observed_transit_times(
-    c
-) -> Optional[np.ndarray]:
-    """
-    Returns observed transit times (days) for clustering/dedup:
-      - Single: [t0_days]
-      - Periodic: transit_times_days if present
-    Returns None if not available for periodic.
-    """
+    finite_durations = cluster_durations[np.isfinite(cluster_durations)]
+    finite_depths = cluster_depths[np.isfinite(cluster_depths)]
 
-    # Singles: always just the one observed epoch
-    if getattr(c, "ptype", None) == "Single":
-        return np.array([float(getattr(c, "t0_days"))], dtype=float)
+    if len(finite_durations) > 0:
+        refit_cand.duration_days = float(np.nanmedian(finite_durations))
 
+    if len(finite_depths) > 0:
+        refit_cand.depth = float(np.nanmedian(finite_depths))   
 
-    # Periodic: otherwise look for a candidate field (if/when you add it)
-    arr = getattr(c, "transit_times_days", None)
-    if arr:
-        vv = np.asarray(arr, dtype=float)
-        vv = vv[np.isfinite(vv)]
-        return np.sort(vv) if vv.size else None
+    # metadata / bookkeeping
+    refit_cand.default = False
+    refit_cand.fit_is_current = False
 
-    return None
+    note = (
+        f"alias_dedup: refit candidate seeded from {winner.candidate_id()} "
+        f"at inferred missing base period ~{new_period:.6f} d "
+        f"(support={missing_base['support']})"
+    )
+    refit_cand.notes = (
+        refit_cand.notes + "; " + note
+        if getattr(refit_cand, "notes", "")
+        else note
+    )
 
+    return refit_cand
 
-
-def _shared_observed_transit_time_overlap(a: PlanetCandidate, b: PlanetCandidate, tol_days: float) -> Tuple[int, int]:
-    """
-    Count overlaps between observed transit-time lists.
-    Returns (n_overlap, n_minlist). If either list missing -> (0,0).
-    """
-    ta = _get_observed_transit_times(a)
-    tb = _get_observed_transit_times(b)
-    if ta is None or tb is None:
-        return 0, 0
-
-    i = j = 0
-    overlap = 0
-    while i < ta.size and j < tb.size:
-        da = ta[i]
-        db = tb[j]
-        if abs(da - db) <= tol_days:
-            overlap += 1
-            i += 1
-            j += 1
-        elif da < db:
-            i += 1
-        else:
-            j += 1
-
-    return overlap, int(min(ta.size, tb.size))
-
-def _depth_consistent(a: PlanetCandidate, b: PlanetCandidate, ratio_max: float = 1.75, floor: float = 5e-5) -> bool:
-    da = _depth_med(a)
-    db = _depth_med(b)
-    if da is None or db is None or (not np.isfinite(da)) or (not np.isfinite(db)):
-        return True  # don't block if depth missing
-    dmax = max(da, db)
-    dmin = max(min(da, db), floor)
-    return (dmax / dmin) <= ratio_max
-
-
-# ---------- winner selection ----------
-def _winner_key(c: PlanetCandidate) -> Tuple:
-    """
-    Higher is better. This encodes what we discussed:
-      1) signal_not_zero (your 'flat LC fit' veto)
-      2) fit_is_current True
-      3) lower rhat (better)  -> negative
-      4) higher SNR median
-      5) shorter period (tie-breaker; negative period so smaller wins)
-    """
-    sig = 1 if _signal_not_zero(c) else 0
-    fit = 1 if getattr(c, "fit_is_current", False) else 0
-
-    rhat = _max_rhat(c)
-    # rhat_ok: 1 if acceptable / 0 if not (tune threshold)
-    rhat_ok = 1
-    if rhat is not None and float(rhat) > 1.1:
-        rhat_ok = 0
-    snr = _snr_med(c)
-    P = _period(c)
-    per_score = 0.0 if P is None else -float(P)  # shorter is better as tie-breaker
-    return (sig, fit, rhat_ok, snr, per_score)
 
 
 # ---------- main entrypoint ----------
 def alias_dedup_periodic_candidates(
     periodic_candidates: List[PlanetCandidate],
+    extra_planet_candidates: List[PlanetCandidate],
     *,
-    # clustering thresholds
     shared_t0_tol_days: float = 0.05,
-    shared_overlap_frac: float = 0.6,
+    containment_threshold: float = 0.65,
+    min_shared_events: int = 2,
     depth_ratio_max: float = 1.75,
-    # ephemeris fallback thresholds
-    epoch_tol_scale: float = 0.25,
-    epoch_tol_floor_days: float = 0.075,
-) -> List[PlanetCandidate]:
+    duration_ratio_max: float = 1.5,
+    frac_of_duration_tol: float = 0.25,
+) -> Tuple[List[PlanetCandidate], List[dict]]:
     """
     Mutates candidates in-place:
       - sets default=False on duplicates
       - appends a note pointing to the winner candidate_id
     Returns the same list (mutated).
+
+    Main duplicate criterion:
+      two periodic candidates are treated as the same planet family if
+      one candidate's observed transit-event set is mostly contained in
+      the other's.
     """
 
-    # only periodic with a period
-    cands = [c for c in periodic_candidates if getattr(c, "ptype", None) == "Periodic" and _period(c) is not None]
+    cands = [
+        c for c in periodic_candidates
+        if getattr(c, "ptype", None) == "Periodic" and ped._period(c) is not None
+    ]
     n = len(cands)
-    if n < 2:
-        return periodic_candidates
 
-    # union-find clustering
+
+    refit_requests = []
+    seen_refits.add(key)
+
+
+    # if n < 2:
+    #     return periodic_candidates
+
     parent = list(range(n))
 
     def find(x):
@@ -577,54 +442,79 @@ def alias_dedup_periodic_candidates(
         return x
 
     def union(a, b):
-        ra, rb = find(a), find(b)
+        ra = find(a)
+        rb = find(b)
         if ra != rb:
             parent[rb] = ra
 
     # pairwise cluster decision
     for i in range(n):
         for j in range(i + 1, n):
-            a, b = cands[i], cands[j]
+            a = cands[i]
+            b = cands[j]
 
-            # If both candidates have observed transit-time lists, use those directly.
-            a_observed_transit_times_days = _get_observed_transit_times(a)
-            b_observed_transit_times_days = _get_observed_transit_times(b)
+            transit_times_a_days = ped._observed_transit_times_days(a)
+            transit_times_b_days = ped._observed_transit_times_days(b)
 
-            if a_observed_transit_times_days is not None and b_observed_transit_times_days is not None:
-                if not _depth_consistent(a, b, ratio_max=depth_ratio_max):
-                    continue
-
-                overlap_count, overlap_denom = _shared_observed_transit_time_overlap(
-                    a, b, tol_days=shared_t0_tol_days
-                )
-
-                if overlap_denom > 0 and (overlap_count / overlap_denom) >= shared_overlap_frac:
-                    union(i, j)
-                    continue
-
-                fraction_a_explained_by_b, fraction_b_explained_by_a = _mutual_ephemeris_explainability(
-                    a, b, tol_days=shared_t0_tol_days
-                )
-
-                if (
-                    fraction_a_explained_by_b >= 0.85
-                    and fraction_b_explained_by_a >= 0.85
-                ):
-                    union(i, j)
-
+            if len(transit_times_a_days) == 0 or len(transit_times_b_days) == 0:
                 continue
-            # elif off
+
+            match_tolerance_days = ped._event_match_tolerance_days(
+                a,
+                b,
+                floor_days=shared_t0_tol_days,
+                frac_of_duration=frac_of_duration_tol,
+            )
+
+
+            overlap_count, na, nb = ped._shared_event_counts(
+                a,
+                b,
+                tol_days=match_tolerance_days,
+            )
+
+
+            frac_a_in_b, frac_b_in_a, _ = ped._containment_fractions(
+                a,
+                b,
+                tol_days=match_tolerance_days,
+            )
+
+            unique_a_count = na - overlap_count
+            unique_b_count = nb - overlap_count
+
+            if overlap_count < min_shared_events:
+                continue
+
+            if max(frac_a_in_b, frac_b_in_a) < containment_threshold:
+                continue
+
+            if not (ped._depth_consistent(a, b, ratio_max=depth_ratio_max) or ped._duration_consistent(a, b, ratio_max=duration_ratio_max)):
+                continue
+
+
+            # if both still have meaningful unique evidence beyond the overlap,
+            # do not merge immediately. Let missing-base-period logic handle them.
+            if unique_a_count > 1 and unique_b_count > 1:
+                continue
+
+            union(i, j)
+
     groups = {}
     for i in range(n):
         r = find(i)
         groups.setdefault(r, []).append(i)
 
-    # apply winner/loser marking
-    for idx_list in groups.values():
-        if len(idx_list) < 2:
-            continue
 
-        members = [cands[i] for i in idx_list]
+
+    # apply winner/loser marking
+    for root, idxs in groups.items():
+        cluster = [cands[i] for i in idxs]
+
+        members = _add_matching_singles_to_group(
+            cluster,
+            extra_planet_candidates,
+        )
 
         missing_base = _infer_missing_base_period_from_cluster(
             members,
@@ -636,10 +526,38 @@ def alias_dedup_periodic_candidates(
             support_tol_days=shared_t0_tol_days,
         )
 
-        winner = max(members, key=_winner_key)
+        # hard preference: if only one member passes signal_not_zero, it wins
+        current_members = [m for m in cluster if getattr(m, "fit_is_current", False)]
+
+        if len(current_members) > 0:
+            winner_pool = current_members
+        else:
+            winner_pool = cluster
+
+        passing_signal = [m for m in winner_pool if ped._signal_not_zero(m)]
+
+        if len(passing_signal) == 1:
+            winner = passing_signal[0]
+        elif len(passing_signal) > 1:
+            winner = max(passing_signal, key=ped._winner_key)
+        else:
+            winner = max(winner_pool, key=ped._winner_key)
         winner_id = winner.candidate_id()
 
-        if missing_base is not None:
+        key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
+
+        if missing_base is not None and key not in seen_refits:
+            refit_requests.append({
+                "candidate": _make_missing_base_refit_candidate(
+                    winner,
+                    cluster,
+                    missing_base,
+                ),
+                "family_ids": [m.candidate_id() for m in cluster],
+                "proposed_period_days": float(missing_base["period_days"]),
+            })            
+            seen_refits.add(key)
+
             note = (
                 f"alias_dedup: cluster implies missing base period "
                 f"~{missing_base['period_days']:.6f} d "
@@ -648,21 +566,45 @@ def alias_dedup_periodic_candidates(
             winner.notes = (winner.notes + "; " + note) if getattr(winner, "notes", "") else note
 
 
-        for m in members:
+        for m in cluster:
             if m is winner:
                 continue
             m.default = False
             note = f"alias_dedup: duplicate/alias of {winner_id}"
             m.notes = (m.notes + "; " + note) if getattr(m, "notes", "") else note
 
-    _flag_missing_base_period_families(
-            periodic_candidates,
-            same_period_frac_tol=0.02,
-            min_group_size=3,
-            min_support=3,
-            min_supporting_members=3,
-            shorter_period_fraction_max=0.8,
-            support_tol_days=shared_t0_tol_days,
-        )
+    propose_targets = _flag_missing_base_period_families(
+        periodic_candidates,
+        same_period_frac_tol=0.02,
+        min_group_size=2,
+        min_support=3,
+        min_supporting_members=2,
+        shorter_period_fraction_max=0.8,
+        support_tol_days=shared_t0_tol_days,
+    )
 
-    return periodic_candidates
+    for tup in propose_targets:
+        missing_base, cluster, winner = tup
+
+        key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
+        if key not in seen_refits:
+            refit_requests.append(...)
+            seen_refits.add(key)
+
+    for tup in propose_targets:
+        missing_base, cluster, winner = tup
+        key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
+
+        if missing_base is not None and key not in seen_refits:
+            refit_requests.append({
+                "candidate": _make_missing_base_refit_candidate(
+                    winner,
+                    cluster,
+                    missing_base,
+                ),
+                "family_ids": [m.candidate_id() for m in cluster],
+                "proposed_period_days": float(missing_base["period_days"]),
+            })            
+            seen_refits.add(key)
+
+    return periodic_candidates, refit_requests

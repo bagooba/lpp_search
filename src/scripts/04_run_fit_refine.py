@@ -36,6 +36,8 @@ from utils.singles_periodicity import (
     choose_best_seed_row_per_depth_group,
 )
 
+import utils.periodic_event_dedup as ped
+
 from utils.alias_dedup import alias_dedup_periodic_candidates
 from utils.queue import enqueue
 
@@ -137,6 +139,68 @@ def single_matches_periodic(s_t0, periodic_candidates, time_min, time_max, fixed
             return True
 
     return False
+
+
+def _pick_family_winner(members: list[PlanetCandidate]) -> PlanetCandidate:
+    current_members = [m for m in members if getattr(m, "fit_is_current", False)]
+
+    if len(current_members) > 0:
+        winner_pool = current_members
+    else:
+        winner_pool = members
+
+    passing_signal = [m for m in winner_pool if ped._signal_not_zero(m)]
+
+    if len(passing_signal) == 1:
+        return passing_signal[0]
+    elif len(passing_signal) > 1:
+        return max(passing_signal, key=ped._winner_key)
+    else:
+        return max(winner_pool, key=ped._winner_key)
+
+
+def _observed_support_count(c: PlanetCandidate) -> int:
+    tt = getattr(c, "transit_times_days", None)
+    if tt is None:
+        return 0
+    return int(len(tt))
+
+
+def _should_promote_missing_base_refit(
+    refit_candidate: PlanetCandidate,
+    old_family_members: list[PlanetCandidate],
+) -> tuple[bool, PlanetCandidate, str]:
+    old_winner = _pick_family_winner(old_family_members)
+
+    if not getattr(refit_candidate, "fit_is_current", False):
+        return False, old_winner, "refit is not current"
+
+    if not ped._signal_not_zero(refit_candidate):
+        return False, old_winner, "refit signal is zero"
+
+    # if not (
+    #     ped._duration_consistent(refit_candidate, old_winner)
+    #     or ped._depth_consistent(refit_candidate, old_winner)
+    # ):
+    #     return False, old_winner, "refit morphology not consistent with previous family winner"
+
+    new_support = _observed_support_count(refit_candidate)
+    old_support = _observed_support_count(old_winner)
+
+    if new_support < old_support:
+        return False, old_winner, "refit explains fewer observed transits"
+
+    if new_support > old_support:
+        return True, old_winner, "refit explains more observed transits"
+
+    if ped._winner_key(refit_candidate) > ped._winner_key(old_winner):
+        return True, old_winner, "same support, refit wins on winner key"
+
+    return False, old_winner, "previous family winner preferred"
+
+
+
+
 # def consume_singles_under_periodics(final_candidates, time_min, time_max, fixed_tol_days=0.05):
 #     periodics = [c for c in final_candidates if c.ptype == "Periodic" and c.fit_is_current]
 #     singles   = [c for c in final_candidates if c.ptype == "Single"]
@@ -381,7 +445,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
         else np.full_like(flux, np.nanstd(flux))
     )
 
-    periodic_candidates = []
+    per_discovered = []
 
     if periodic_raw:
         
@@ -412,7 +476,82 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             )
             print('Checking period: ', ev.period_days)
             fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
-            periodic_candidates.append(pc)
+            per_discovered.append(pc)
+
+        # 2) Mask using fitted periodic candidates ONLY
+        intransit = np.zeros_like(time, dtype=bool)
+        for pc in per_discovered:
+            if pc.fit_is_current:
+                intransit |= periodic_mask_from_fitted_candidate(time, pc, buffer_days=0.2)
+
+        have_mask = bool(intransit.any())
+
+        print(f"[DEBUG] masked points: {intransit.sum()} / {len(intransit)}")
+        print(f"[DEBUG] periodic fitted: {[pc.fit_is_current for pc in per_discovered]}")
+
+
+        # 2.5) CHECK BEFORE DT pass-2 - were all the DT pass-1 things found? 
+
+
+        unmatched = pass1_events.copy()
+        for pc in per_discovered:
+            result = check_singles_against_periodic_candidate(
+                periodic=pc,               # your periodic PlanetCandidate
+                singles=pass1_events       # list of PlanetCandidate (ptype="Single")
+            )
+
+            print("Matched:", result["n_matched"])
+            print("Unmatched:", result["n_unmatched"])
+
+            
+            for c in result["unmatched_candidates"]:
+                if c in unmatched:
+                    unmatched.remove(c)
+
+                # print("Unmatched single:", c.t0_days)
+
+
+        all_periodic, retry_requests = alias_dedup_periodic_candidates(per_discovered, unmatched)
+
+        accepted_missing_base = []
+
+        for req in retry_requests:
+            pc = req["candidate"]
+            family_ids = set(req["family_ids"])
+
+            fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
+
+            old_family = [
+                c for c in per_discovered
+                if c.candidate_id() in family_ids
+            ]
+
+            if len(old_family) == 0:
+                continue
+
+            promote, old_winner, reason = _should_promote_missing_base_refit(
+                refit_candidate=pc,
+                old_family_members=old_family,
+            )
+
+            if promote:
+                pc.default = True
+                note = f"promoted_missing_base_refit; previous preferred={old_winner.candidate_id()}"
+                pc.notes = (pc.notes + "; " + note) if getattr(pc, "notes", "") else note
+
+                for old in old_family:
+                    old.default = False
+                    old_note = f"superseded_by={pc.candidate_id()}"
+                    old.notes = (old.notes + "; " + old_note) if getattr(old, "notes", "") else old_note
+
+                accepted_missing_base.append(pc)
+            else:
+                pc.default = False
+                note = f"missing_base_refit_not_promoted; previous preferred={old_winner.candidate_id()}; reason={reason}"
+                pc.notes = (pc.notes + "; " + note) if getattr(pc, "notes", "") else note
+                
+        periodic_candidates = per_discovered + accepted_missing_base
+
 
         # 2) Mask using fitted periodic candidates ONLY
         intransit = np.zeros_like(time, dtype=bool)
@@ -429,7 +568,8 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
         # 2.5) CHECK BEFORE DT pass-2 - were all the DT pass-1 things found? 
 
 
-        for pc in periodic_candidates:
+        unmatched = pass1_events.copy()
+        for pc in per_discovered:
             result = check_singles_against_periodic_candidate(
                 periodic=pc,               # your periodic PlanetCandidate
                 singles=pass1_events       # list of PlanetCandidate (ptype="Single")
@@ -438,8 +578,14 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             print("Matched:", result["n_matched"])
             print("Unmatched:", result["n_unmatched"])
 
+            
             for c in result["unmatched_candidates"]:
-                print("Unmatched single:", c.t0_days)
+                if c in unmatched:
+                    unmatched.remove(c)
+
+                # print("Unmatched single:", c.t0_days)
+
+
 
         # 3) DT pass-2 (residual) ONLY if we actually masked something
 
@@ -453,7 +599,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
                 # optional: also clear any derived products you might store
                 # "dt_events_pass2_summary": [],
 })
-            singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.75, plot_events=False, verbose=False)
+            singles_cfg = SinglesSearchConfig(flavour=flavour, confidence=0.7, plot_events=False, verbose=False)
             singles_search(
                 target,
                 cfg=singles_cfg,
@@ -477,7 +623,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
         # 4) Fit the pass2 events as singles (then later: promote periodic if periodicity emerges)
         for ev in pass2_events:
-            if single_matches_periodic(ev.t0_days, periodic_candidates, time_min, time_max):
+            if single_matches_periodic(ev.t0_days, per_discovered, time_min, time_max):
                 continue
 
             sc = PlanetCandidate(
@@ -494,7 +640,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             single_candidates.append(sc)
 
     # 5) Optional promotion from fitted singles
-    promoted_periodic_candidates = []
+    promoted_singles_candidates = []
 
     if len(single_candidates) >= 3:
         seed_rows = seed_periods_from_dt_events(
@@ -595,19 +741,19 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             ok = fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
 
             if ok:
-                promoted_periodic_candidates.append(pc)
+                promoted_singles_candidates.append(pc)
                 mark_single_members_consumed(
                     single_candidates,
                     member_idx,
                     pc.candidate_id(),
                 )
-    deduped = alias_dedup_periodic_candidates(periodic_candidates + promoted_periodic_candidates)
-    for c in deduped:
+    all_periodic = per_discovered + promoted_singles_candidates
+    for c in all_periodic:
         if getattr(c, "ptype", None) == "Periodic":
             print(c.candidate_id(), c.period_days, getattr(c, "default", True), c.notes)
 
     # 6) Write outputs (no PDFs)
-    final_candidates = deduped + single_candidates 
+    final_candidates = all_periodic + single_candidates 
 
     
 
@@ -640,9 +786,9 @@ def main(idx: int) -> None:
     target = Target.from_dir(root)
     # print('Target:', target)
 
-    # if not target.stage_at_least(PipelineStage.SEARCHED):
-    #     print(f"[FATAL] {root.name}: need DT pass‑1 first (stage < SEARCHED). Run script 02.")
-    #     sys.exit(3)
+    if not target.stage_at_least(PipelineStage.SEARCHED1):
+        print(f"[FATAL] {root.name}: need DT pass‑1 first (stage < SEARCHED1). Run script 02.")
+        sys.exit(3)
 
 
     global_csv = Path.cwd() / "all_final_candidates.csv"

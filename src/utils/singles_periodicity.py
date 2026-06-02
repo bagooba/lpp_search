@@ -1,4 +1,5 @@
 import numpy as np
+from collections import defaultdict
 from core.planet_candidate import PlanetCandidate
 from stages.search_periodic import PeriodicSearchConfig, run_seed_prepass_full_lc
 

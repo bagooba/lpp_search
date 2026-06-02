@@ -94,13 +94,15 @@ def run_for_target(target: Target) -> Path:
 
 def main(idx: int) -> None:
     dirs = sorted(glob.glob(TARGET_GLOB))
-    if not (0 <= idx < len(dirs)):
-        print(f"[FATAL] idx={idx} out of range for {len(dirs)} targets.")
-        sys.exit(2)
 
     root = Path(dirs[idx])
     target = Target.from_dir(root)
 
+    if not (0 <= idx < len(dirs)):
+        print(f"[FATAL] idx={idx} out of range for {len(dirs)} targets.")
+        sys.exit(2)
+
+    print('Pipeline stage', target.pipeline_stage)
     if not target.stage_at_least(PipelineStage.FITTED):
         print(f"[FATAL] {root.name}: need to fit data first (stage < FITTED). Run script 04.")
         sys.exit(3)

@@ -183,7 +183,7 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
     # snr_arr = power_final / (mad / 0.67)
     # snr = float(snr_arr[idx])
 
-    local_intransit = model.transit_mask(time, period, duration, t0+0.5)
+    local_intransit = model.transit_mask(time, period, duration, t0)
     scatter = np.std(flux[~local_intransit])
 
     
@@ -212,7 +212,6 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
         print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr}), SDE={sde:.2f} (min {cfg.min_sde})")
 
     if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
-        print('period failed')
         return ("fail_threshold", None, period, t0, duration, None)
 
     # single-like gate: mask and continue, but don't save
@@ -342,7 +341,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
 
     it = 0
     fails = 0
-    while it < cfg.max_iters and fails < 3:# and len(accepted_events) < cfg.max_planets:
+    while (it < cfg.max_iters) and (fails <= 1) and (len(accepted_events) < cfg.max_planets):
         it += 1
 
         # residual data (mask stays full-length)
@@ -362,7 +361,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
         results =  run_bls(model, durations, cfg, np.ptp(time_new), period_grid=period_grid, max_per=max_per)
 
         # evaluate best peak (single/repeat/accept/stop)
-        msg, ev, period, t0, duration, rep_idx = process_bls_results(time, flux, model, results, cfg, accepted_events)
+        msg, ev, period, t0, duration, rep_idx = process_bls_results(time_new, flux_new, model, results, cfg, accepted_events)
 
         # ---- STRICT STOP ----
         if msg == "fail_threshold":
@@ -371,21 +370,29 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
             # - in the 'fail_threshold' branch, mask this peak and continue
             # - keep a counter to stop after N no-progress attempts.
 
-            if cfg.verbose:
-                print(f"Candidate failed threshold but if fails<3 (fails = {fails}) - masking and continuing. (it={it})")
-            intransit |= transit_mask(time, period, duration, t0, buffer = cfg.transit_mask_base_buffer_days)
-            fails+=1
+            fails += 1
+            if fails>1:
+                print('consecutive failed periods')
+            else:
+                print(f'period failed; fail number {fails}' )
+
+            
+            intransit |= transit_mask(time, period, duration, t0, cfg.transit_mask_base_buffer_days)
+            break   
             # else:   
             #     print('breaking loop')
             #     break
-
         # ---- SINGLE-LIKE (mask and continue, do not save) ----
         if msg == "mask_only":
+            # fails += 0.25
+
             intransit |= transit_mask(time, period, duration, t0, cfg.transit_mask_base_buffer_days)
             continue
 
         # ---- REPEAT EPHEMERIS (widen mask and continue, do not save) ----
         if msg == "repeat":
+            # fails += 0.25
+
             # widen based on how many times we've hit this repeat
             repeat_counts[rep_idx] = repeat_counts.get(rep_idx, 0) + 1
             widen = min(cfg.max_widen_factor, 1 + repeat_counts[rep_idx])
@@ -402,7 +409,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
 
         # ---- ACCEPT (save event, mask, continue) ----
         if msg == "accept":
-            fails = 0
+            # fails = 0
             # accepted-only rule
 
             print('accepted period')
@@ -411,8 +418,6 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
             intransit |= transit_mask(time, period, duration, t0, cfg.transit_mask_base_buffer_days)
             continue
 
-    if fails>3:
-        print('consecutive failed periods')
     return accepted_events, intransit
 
 
@@ -452,15 +457,14 @@ def run_periodic_full_and_chunked(time, flux, flux_err, cfg, accepted_events=Non
     accepted_events, intransit = using_BLS_search(time, flux, flux_err=flux_err, cfg=cfg, accepted_events=accepted_events, intransit=intransit)
 
     # 2) Chunked search
-    blocks = breaking_up_data(time)  # shared splitter 
+    blocks = breaking_up_data(time, min_size = 2.)  # shared splitter 
     # Sort blocks by size (your legacy approach does this) 
     blocks = sorted(blocks, key=lambda idx: len(idx), reverse=True)
 
-    for idx in blocks[:4]:  # keep your legacy cap on number of chunks
-        if len(idx) < 50:
-            continue
+    for enum, idx in enumerate(blocks[:4]):  # keep your legacy cap on number of chunks
+        print(f'running chunk: {enum+1}:{len(blocks)}')
         t_seg = time[idx]
-        if np.ptp(t_seg)<20:
+        if len(t_seg)<20:
             continue
         f_seg = flux[idx]
         fe_seg = flux_err[idx] if flux_err is not None else None

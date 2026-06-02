@@ -123,7 +123,7 @@ def detect_transit_events(time, flux, flux_err, cfg):
     bboxes = DT_analysis(time, flux, flux_err, cfg.confidence, is_flat=True)
     events = []
     
-    print('bboxes', bboxes)
+    print('bboxes', len(bboxes))
     if len(bboxes) == 0:
         return events, bboxes
 
@@ -209,7 +209,7 @@ def singles_search(target, *, cfg=SinglesSearchConfig(), run_1=True,
 
     if total_time.size > 0:
 
-        idx_blocks = breaking_up_data(total_time, break_val=0.5, min_size=1.0)
+        idx_blocks = breaking_up_data(total_time, break_val=0.5, min_size=2.5)
         good_idx = []
         if len(idx_blocks) > 1:
             spans = np.array([np.ptp(total_time[idx]) for idx in idx_blocks])

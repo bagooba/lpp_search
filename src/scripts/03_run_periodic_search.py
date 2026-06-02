@@ -44,8 +44,8 @@ def main(idx):
     target = Target.from_dir(root)
 
     # Gate: DT pass-1 must have been performed
-    if not target.stage_at_least(PipelineStage.SEARCHED):
-        print(f"[FATAL] {root.name}: need DT pass-1 first (stage < SEARCHED). Run script 02.")
+    if not target.stage_at_least(PipelineStage.SEARCHED1):
+        print(f"[FATAL] {root.name}: need DT pass-1 first (stage < SEARCHED1). Run script 02.")
         sys.exit(3)
 
     # Gate: DT pass-1 must have found something
@@ -92,6 +92,8 @@ def main(idx):
         run_path=run_path,
     )
 
+    if len(periodic_events)>0:
+        target.set_stage(PipelineStage.SEARCHED2)
 
 
     attempt_record = {

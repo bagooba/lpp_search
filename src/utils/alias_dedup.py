@@ -6,8 +6,10 @@ import copy
 import numpy as np
 from typing import List, Tuple, Optional
 
-from core.planet_candidate import PlanetCandidate
-from utils.singles_periodicity import potential_periods_from_single_dt_events
+from core.transit_event import TransitEvent
+from core.periodic_event import PeriodicEvent
+
+from utils.singles_periodicity import potential_periods_from_single_dt_events, best_t0_and_snr_for_period
 import utils.periodic_event_dedup as ped
 
 # ---------- small helpers ----------
@@ -49,6 +51,29 @@ def _group_surviving_periodic_candidates_by_near_equal_period(
     groups.append(current_group)
     return groups
 
+def _get_all_t0_values(members):
+    all_t0s = []
+    existing_periods = []
+    for c in members:
+        if isinstance(c, PlanetCandidate):
+            tt = ped._observed_transit_times_days(c)
+            if tt is not None and tt.size > 0:
+                all_t0s.extend(tt.tolist())
+
+            try:
+                P = ped._period(c)
+                if P is not None and np.isfinite(P) and P > 0:
+                    existing_periods.append(float(P))
+            except Exception:
+                pass
+
+        else:  # TransitEvent
+            t0 = getattr(c, "t0_days", None)
+            if t0 is not None:
+                all_t0s.append(float(t0))
+    return all_t0s, existing_periods
+
+
 
 def _count_family_members_supporting_period(
     members: List[PlanetCandidate],
@@ -62,11 +87,21 @@ def _count_family_members_supporting_period(
     """
     supporting_members = 0
     inc_members = []
-    for c in members:
-        obs_t0s = ped._observed_transit_times_days(c)
-        if obs_t0s is None or obs_t0s.size == 0:
-            continue
 
+    for c in members:
+
+        # --- per-member times ---
+        if isinstance(c, PlanetCandidate):
+            obs_t0s = ped._observed_transit_times_days(c)
+        else:
+            t0 = getattr(c, "t0_days", None)
+            if t0 is None:
+                continue
+            obs_t0s = np.array([float(t0)])
+
+        if obs_t0s is None or len(obs_t0s) == 0:
+            continue
+    
         phase_residual_days = (
             (obs_t0s - proposed_t0_days + 0.5 * proposed_period_days)
             % proposed_period_days
@@ -217,20 +252,8 @@ def _infer_missing_base_period_from_cluster(
             "support": number of observed epochs explained
         }
     """
-    all_t0s = []
-    existing_periods = []
-
-    for c in members:
-        tt = ped._observed_transit_times_days(c)
-        if tt is not None and tt.size > 0:
-            all_t0s.extend(tt.tolist())
-        try:
-            P = ped._period(c)
-            if P is not None and np.isfinite(P) and P > 0:
-                existing_periods.append(float(P))
-        except KeyError:
-            continue
-
+    all_t0s, existing_periods = _get_all_t0_values(members)
+     
     if len(all_t0s) < min_support:
         return None
 
@@ -242,7 +265,7 @@ def _infer_missing_base_period_from_cluster(
         t0s,
         min_support=min_support,
         perc_tol=perc_tol,
-        max_ratio=max_ratio,
+        max_divisor=max_ratio,
         P_min=P_min,
     )
 
@@ -299,30 +322,50 @@ def _infer_missing_base_period_from_cluster(
 
 # ---------- considering singles ----------
 
+def _get_event_like_duration(x):
+    if hasattr(x, "duration_days"):
+        return x.duration_days
+    return None
+
+def _get_event_like_depth(x):
+    if hasattr(x, "depth"):
+        return x.depth
+    return None
+
+
 def _add_matching_singles_to_group(
     group: list[PlanetCandidate],
-    extra_planet_candidates: list[PlanetCandidate] | None,
-    ) -> list[PlanetCandidate]:
-    """
-    Add singles to an existing group if they match duration OR depth
-    with at least one candidate already in the group.
+    extra_planet_candidates,
+) -> list:
 
-    This does NOT change grouping logic.
-    It only augments the group before period inference.
-    """
     if extra_planet_candidates is None or len(extra_planet_candidates) == 0:
         return list(group)
 
     augmented = list(group)
 
     for extra in extra_planet_candidates:
+
+        extra_duration = _get_event_like_duration(extra)
+        extra_depth = _get_event_like_depth(extra)
+
+        if extra_duration is None or extra_depth is None:
+            continue
+
         for member in group:
-            if ped._duration_consistent(extra, member) or ped._depth_consistent(extra, member):
+            member_duration = ped._duration_days(member)
+            member_depth = ped._depth_med(member)
+
+            if member_duration is None or member_depth is None:
+                continue
+
+            dur_ratio = max(extra_duration, member_duration) / max(min(extra_duration, member_duration), 1e-12)
+            depth_ratio = max(extra_depth, member_depth) / max(min(extra_depth, member_depth), 1e-12)
+
+            if dur_ratio <= 2.0 or depth_ratio <= 2.0:
                 augmented.append(extra)
                 break
 
     return augmented
-
 
 
 def _make_missing_base_refit_candidate(
@@ -401,7 +444,7 @@ def alias_dedup_periodic_candidates(
     extra_planet_candidates: List[PlanetCandidate],
     *,
     shared_t0_tol_days: float = 0.05,
-    containment_threshold: float = 0.65,
+    containment_threshold: float = 0.5,
     min_shared_events: int = 2,
     depth_ratio_max: float = 1.75,
     duration_ratio_max: float = 1.5,
@@ -427,7 +470,7 @@ def alias_dedup_periodic_candidates(
 
 
     refit_requests = []
-    seen_refits.add(key)
+    seen_refits = set()
 
 
     # if n < 2:
@@ -534,36 +577,37 @@ def alias_dedup_periodic_candidates(
         else:
             winner_pool = cluster
 
-        passing_signal = [m for m in winner_pool if ped._signal_not_zero(m)]
+        # passing_signal = [m for m in winner_pool if ped._signal_not_zero(m)]
 
-        if len(passing_signal) == 1:
-            winner = passing_signal[0]
-        elif len(passing_signal) > 1:
-            winner = max(passing_signal, key=ped._winner_key)
-        else:
-            winner = max(winner_pool, key=ped._winner_key)
+        # if len(passing_signal) == 1:
+        #     winner = passing_signal[0]
+        # elif len(passing_signal) > 1:
+        #     winner = max(passing_signal, key=ped._winner_key)
+        # else:
+        winner = max(winner_pool, key=ped._winner_key)
         winner_id = winner.candidate_id()
 
-        key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
+        if missing_base is not None:
+            key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
 
-        if missing_base is not None and key not in seen_refits:
-            refit_requests.append({
-                "candidate": _make_missing_base_refit_candidate(
-                    winner,
-                    cluster,
-                    missing_base,
-                ),
-                "family_ids": [m.candidate_id() for m in cluster],
-                "proposed_period_days": float(missing_base["period_days"]),
-            })            
-            seen_refits.add(key)
+            if key not in seen_refits:
+                refit_requests.append({
+                    "candidate": _make_missing_base_refit_candidate(
+                        winner,
+                        cluster,
+                        missing_base,
+                    ),
+                    "family_ids": [m.candidate_id() for m in cluster],
+                    "proposed_period_days": float(missing_base["period_days"]),
+                })
+                seen_refits.add(key)
 
-            note = (
-                f"alias_dedup: cluster implies missing base period "
-                f"~{missing_base['period_days']:.6f} d "
-                f"(support={missing_base['support']})"
-            )
-            winner.notes = (winner.notes + "; " + note) if getattr(winner, "notes", "") else note
+                note = (
+                    f"alias_dedup: cluster implies missing base period "
+                    f"~{missing_base['period_days']:.6f} d "
+                    f"(support={missing_base['support']})"
+                )
+                winner.notes = (winner.notes + "; " + note) if getattr(winner, "notes", "") else note
 
 
         for m in cluster:
@@ -585,14 +629,6 @@ def alias_dedup_periodic_candidates(
 
     for tup in propose_targets:
         missing_base, cluster, winner = tup
-
-        key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
-        if key not in seen_refits:
-            refit_requests.append(...)
-            seen_refits.add(key)
-
-    for tup in propose_targets:
-        missing_base, cluster, winner = tup
         key = (winner.candidate_id(), round(float(missing_base["period_days"]), 6))
 
         if missing_base is not None and key not in seen_refits:
@@ -608,3 +644,153 @@ def alias_dedup_periodic_candidates(
             seen_refits.add(key)
 
     return periodic_candidates, refit_requests
+
+
+
+
+# ---------- main entrypoint ----------
+def alias_dedup_periodic_events(
+    periodic_events: List[PeriodicEvent],
+    extra_planet_events: List[TransitEvent],
+    *,
+    shared_t0_tol_days: float = 0.3,
+    containment_threshold: float = 0.65,
+    min_shared_events: int = 2,
+    depth_ratio_max: float = 1.75,
+    duration_ratio_max: float = 2,
+    frac_of_duration_tol: float = 2,
+) -> Tuple[List[PlanetCandidate], List[dict]]:
+    """
+    Mutates candidates in-place:
+      - sets default=False on duplicates
+      - appends a note pointing to the winner candidate_id
+    Returns the same list (mutated).
+
+    Main duplicate criterion:
+      two periodic candidates are treated as the same planet family if
+      one candidate's observed transit-event set is mostly contained in
+      the other's.
+    """
+
+
+    cands = [
+        c for c in periodic_events
+        if getattr(c, "ptype", None) == "Periodic" and ped._period(c) is not None
+    ]
+    n = len(cands)
+
+    refit_requests = []
+    seen_refits = set()
+
+
+    # if n < 2:
+    #     return periodic_events
+
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra = find(a)
+        rb = find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    # pairwise cluster decision
+    for i in range(n):
+        for j in range(i + 1, n):
+            a = cands[i]
+            b = cands[j]
+
+            transit_times_a_days = ped._observed_transit_times_days(a)
+            transit_times_b_days = ped._observed_transit_times_days(b)
+
+            if len(transit_times_a_days) == 0 or len(transit_times_b_days) == 0:
+                continue
+
+            match_tolerance_days = ped._event_match_tolerance_days(
+                a,
+                b,
+                floor_days=shared_t0_tol_days,
+                frac_of_duration=frac_of_duration_tol,
+            )
+
+
+            overlap_count, na, nb = ped._shared_event_counts(
+                a,
+                b,
+                tol_days=match_tolerance_days,
+            )
+
+
+            frac_a_in_b, frac_b_in_a, _ = ped._containment_fractions(
+                a,
+                b,
+                tol_days=match_tolerance_days,
+            )
+
+            unique_a_count = na - overlap_count
+            unique_b_count = nb - overlap_count
+
+            if overlap_count < min_shared_events:
+                continue
+
+            if max(frac_a_in_b, frac_b_in_a) < containment_threshold:
+                continue
+
+            if not (ped._depth_consistent(a, b, ratio_max=depth_ratio_max) or ped._duration_consistent(a, b, ratio_max=duration_ratio_max)):
+                continue
+
+
+            # if both still have meaningful unique evidence beyond the overlap,
+            # do not merge immediately. Let missing-base-period logic handle them.
+            if unique_a_count > 1 and unique_b_count > 1:
+                continue
+
+            union(i, j)
+
+    groups = {}
+    for i in range(n):
+        r = find(i)
+        groups.setdefault(r, []).append(i)
+
+
+
+    # apply winner/loser marking
+    for root, idxs in groups.items():
+        cluster = [cands[i] for i in idxs]
+
+        members = _add_matching_singles_to_group(
+            cluster,
+            extra_planet_events,
+        )
+
+        missing_base = _infer_missing_base_period_from_cluster(
+            members,
+            min_support=3,
+            perc_tol=0.02,
+            max_ratio=5,
+            P_min=0.25,
+            merge_tol=0.02,
+            support_tol_days=shared_t0_tol_days,
+        )
+
+        
+
+        # hard preference: if only one member passes signal_not_zero, it wins
+        # current_members = [m for m in cluster if getattr(m, "fit_is_current", False)]
+
+
+        # passing_signal = [m for m in winner_pool if ped._signal_not_zero(m)]
+
+        # if len(passing_signal) == 1:
+        #     winner = passing_signal[0]
+        # elif len(passing_signal) > 1:
+        #     winner = max(passing_signal, key=ped._winner_key)
+        # else:
+      
+    return periodic_events

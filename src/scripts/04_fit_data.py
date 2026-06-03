@@ -22,9 +22,6 @@ from core.planet_candidate import PlanetCandidate
 from core.transit_event import TransitEvent
 from core.periodic_event import PeriodicEvent
 
-
-from utils.run_json import append_run_json_list
-
 from utils.find_total_csv import find_total_csv
 from utils.run_json import upsert_run_json, append_run_json_list
 from utils.singles_periodicity import (
@@ -268,7 +265,35 @@ def append_global_candidates_csv(candidates: list[PlanetCandidate], target: Targ
     write_header = not global_path.exists()
     df.to_csv(global_path, mode="a", header=write_header, index=False)
 
+def resolve_periodic_conflicts(candidates, tol=0.35):
 
+    candidates = sorted(
+        candidates,
+        key=lambda c: getattr(c, "snr", -np.inf),
+        reverse=True,
+    )
+
+    final = []
+    used_times = []
+
+    for c in candidates:
+        t0s = np.array(c.transit_times_days or [])
+
+        conflict = False
+        for ut in used_times:
+            if np.any(np.abs(t0s - ut) < tol):
+                conflict = True
+                break
+
+        if conflict:
+            continue
+
+        final.append(c)
+        
+        used_times.extend([float(x) for x in t0s])
+
+
+    return final
 # ---------------------------
 # Fit helpers
 # ---------------------------
@@ -415,12 +440,6 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
     periodic_raw = run_json.get("periodic_events_raw_latest", None)
 
-    if periodic_raw is None:
-        attempts = run_json.get("periodic_attempts", [])
-        if attempts:
-            periodic_raw = attempts[-1].get("periodic_events_raw", [])
-
-        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json)    
     
     # Load merged total for fitting arrays
 
@@ -435,24 +454,55 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
         else np.full_like(flux, np.nanstd(flux))
     )
 
-    per_discovered = []
+    primary_events = [
+        PeriodicEvent.from_dict(d)
+        for d in run_json.get("periodic_hypotheses_primary", [])
+    ]
 
-    if periodic_raw:
+    alternative_events = [
+        PeriodicEvent.from_dict(d)
+        for d in run_json.get("periodic_hypotheses_alternative", [])
+    ]
 
-        single_candidates = []
+
+    periodic_candidates = []
+    single_candidates = []
+
+    all_periodic = primary_events#+alternative_events
+
+    if not len(all_periodic)>0:
+        if periodic_raw:
+            all_periodic = [PeriodicEvent.from_dict(d) for d in periodic_raw]
+
+
+    if len(all_periodic)>0:
+
         pass2_events = []
 
-        raw_pass1 = run_json.get("dt_events_raw_pass1", [])
-        pass1_events = [TransitEvent.from_dict(d) for d in raw_pass1] if isinstance(raw_pass1, list) else []
 
-        periodic_events = [PeriodicEvent.from_dict(d) for d in periodic_raw]
 
 
         upsert_run_json(run_path, {"status": {"stage": "fit_refine", "state": "running", "updated_at": datetime.now().isoformat()}})
 
+        seen_periods = []
+        unique_events = []
+
+        for ev in all_periodic:
+            if any(abs(ev.period_days - p) / max(p, 1e-12) < 0.02 for p in seen_periods):
+                continue
+            seen_periods.append(ev.period_days)
+            unique_events.append(ev)
+
+        periodic_events = unique_events
+
+
+
         # 1) Convert periodic events -> periodic candidates and fit them
         for ev in periodic_events:
             if ev.duration_days is None or ev.depth is None:
+
+                print(f"[WARN] Missing duration/depth for period {ev.period_days}")
+
                 upsert_run_json(run_path, {
                     "warnings": [f"Skipped periodic event with missing duration/depth: {ev.to_dict()}"]
                 })
@@ -469,48 +519,7 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             )
             print('Checking period: ', ev.period_days)
             fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
-            per_discovered.append(pc)
-
-        periodic_candidates, retry_requests = alias_dedup_periodic_candidates(per_discovered, pass1_events.copy())
-
-        accepted_missing_base = []
-
-        for req in retry_requests:
-            pc = req["candidate"]
-            family_ids = set(req["family_ids"])
-
-            fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
-
-            old_family = [
-                c for c in per_discovered
-                if c.candidate_id() in family_ids
-            ]
-
-            if len(old_family) == 0:
-                continue
-
-            promote, old_winner, reason = _should_promote_missing_base_refit(
-                refit_candidate=pc,
-                old_family_members=old_family,
-            )
-
-            if promote:
-                pc.default = True
-                note = f"promoted_missing_base_refit; previous preferred={old_winner.candidate_id()}"
-                pc.notes = (pc.notes + "; " + note) if getattr(pc, "notes", "") else note
-
-                for old in old_family:
-                    old.default = False
-                    old_note = f"superseded_by={pc.candidate_id()}"
-                    old.notes = (old.notes + "; " + old_note) if getattr(old, "notes", "") else old_note
-
-                accepted_missing_base.append(pc)
-            else:
-                pc.default = False
-                note = f"missing_base_refit_not_promoted; previous preferred={old_winner.candidate_id()}; reason={reason}"
-                pc.notes = (pc.notes + "; " + note) if getattr(pc, "notes", "") else note
-                
-        periodic_candidates = periodic_candidates + accepted_missing_base
+            periodic_candidates.append(pc)
 
 
         # 2) Mask using fitted periodic candidates ONLY
@@ -526,27 +535,6 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
 
 
         # 2.5) CHECK BEFORE DT pass-2 - were all the DT pass-1 things found? 
-
-
-        unmatched = pass1_events.copy()
-        for pc in periodic_candidates:
-            result = check_singles_against_periodic_candidate(
-                periodic=pc,               # your periodic PlanetCandidate
-                singles=pass1_events       # list of PlanetCandidate (ptype="Single")
-            )
-
-            print("Matched:", result["n_matched"])
-            print("Unmatched:", result["n_unmatched"])
-
-            
-            for c in result["unmatched_candidates"]:
-                if c in unmatched:
-                    unmatched.remove(c)
-
-                # print("Unmatched single:", c.t0_days)
-
-
-
         # 3) DT pass-2 (residual) ONLY if we actually masked something
 
         pass2_events = []
@@ -599,123 +587,18 @@ def run_fit_refine_for_target(target: Target, global_csv_path: Path) -> None:
             fit_and_attach(target, sc, time, flux, unc, run_path, verbose=False)
             single_candidates.append(sc)
 
-    # 5) Optional promotion from fitted singles
-    promoted_singles_candidates = []
+           # 5) Optional promotion from fitted singles
 
-    if len(single_candidates) >= 3:
-        seed_rows = seed_periods_from_dt_events(
-            single_candidates,
-            min_support=3,
-            depth_ratio_max=1.25,
-            perc_tol=0.02,
-            max_divisor=3,
-            P_min=1.0,
-        )
-
-        print("trying periods", [x["P"] for x in seed_rows])
-
-        # Score each distinct period once on the full LC
-        period_values = np.array([row["P"] for row in seed_rows], dtype=float)
-        period_values = period_values[np.isfinite(period_values)]
-        period_values = np.sort(period_values)
-        if len(period_values) > 0:
-            uniq_idx = keep_unique_period_indices(period_values)
-            unique_periods = period_values[uniq_idx]
-        else:
-            unique_periods = np.array([], dtype=float)
-
-        scored_cache = score_unique_seed_periods(
-            time=time,
-            flux=flux,
-            flux_err=unc,
-            periods=unique_periods,
-            flavour=flavour,
-        )
-
-        scored_seed_rows = attach_scores_to_seed_rows(seed_rows, scored_cache)
-
-        # Keep only the best harmonic-family representative per depth group
-        winner_rows = choose_best_seed_row_per_depth_group(
-            scored_seed_rows,
-            max_multiple=5,
-            rel_tol=0.02,
-        )
-
-        print("winner periods", [x["P"] for x in winner_rows])
-
-
-        for row in winner_rows:
-            if not np.isfinite(row["depth"]) or not np.isfinite(row["duration"]):
-                continue
-
-            # folded-SNR sanity check using grouped depth
-            oot_window_days = max(0.05, 2.0 * row["duration"])
-            best_t0, snr = best_t0_and_snr_for_period(
-                time=time,
-                flux=flux,
-                period_days=row["P"],
-                trial_t0s=row["t0s"],
-                duration_days=row["duration"],
-                expected_depth=row["depth"],
-                oot_window_days=oot_window_days,
-            )
-
-            passes_snr = np.isfinite(snr) and snr > 10.0
-
-
-            print(
-                f"[PERIOD CHECK] P={row['P']:.6f}, "
-                f"seed_bls_passed={row.get('bls_passed', False)}, "
-                f"seed_bls_snr={row.get('bls_snr', np.nan)}, "
-                f"best_t0={best_t0}, snr={snr}, "
-                f"passes_snr={passes_snr}"
-            )
-
-            if not passes_snr:
-                continue
-
-            member_idx = matching_event_indices_for_period(
-                single_candidates,
-                candidate_indices=row["group_indices"],
-                period_days=row["P"],
-                t0_days=best_t0,
-                event_tol_days=max(0.05, 0.25 * row["duration"]),
-            )
-
-            if len(member_idx) < 3:
-                continue
-
-            pc, member_idx = candidate_from_indices(
-                single_candidates,
-                member_idx,
-                period_days=row["P"],
-                t0_days=best_t0,
-                source="SinglesPeriodicPromotion",
-                notes_prefix="promoted_from_singles; ",
-            )
-
-            if pc is None:
-                continue
-
-            pc.depth = normalize_depth_to_fractional(pc.depth)
-            ok = fit_and_attach(target, pc, time, flux, unc, run_path, verbose=False)
-
-            if ok:
-                promoted_singles_candidates.append(pc)
-                mark_single_members_consumed(
-                    single_candidates,
-                    member_idx,
-                    pc.candidate_id(),
-                )
-    all_periodic = periodic_candidates + promoted_singles_candidates
-    for c in all_periodic:
-        if getattr(c, "ptype", None) == "Periodic":
-            print(c.candidate_id(), c.period_days, getattr(c, "default", True), c.notes)
+    else: 
+        pass1_events, single_candidates = finalize_pass1_singles_only(target, run_path, run_json)    
 
     # 6) Write outputs (no PDFs)
-    final_candidates = all_periodic + single_candidates 
+    candidates = periodic_candidates + single_candidates 
 
-    
+    candidates = [c for c in candidates if ped._snr_med(c) > 10]
+
+    final_candidates = resolve_periodic_conflicts(candidates)
+
 
     # time_min = float(time.min())
     # time_max = float(time.max())

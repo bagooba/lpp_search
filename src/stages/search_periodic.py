@@ -208,11 +208,18 @@ def evaluate_best_peak(time, flux, model, results, idx, power_final, cfg, accept
     snr = np.sqrt(counts_total) * depth / scatter if scatter > 0 else 0.0
 
 
-    if cfg.verbose:
-        print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr}), SDE={sde:.2f} (min {cfg.min_sde})")
 
-    if (snr is None) or (snr < cfg.min_snr) or (sde < cfg.min_sde):
-        return ("fail_threshold", None, period, t0, duration, None)
+    if (snr is None) or (snr < cfg.min_snr):
+        if cfg.use_seed_periods == True:
+            if cfg.verbose:
+                print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr}))")
+            return ("fail_threshold", None, period, t0, duration, None)
+        
+        if (sde < cfg.min_sde):
+            if cfg.verbose:
+                print(f"Candidate: P={period:.4f} d, SNR={snr:.2f} (min {cfg.min_snr}), SDE={sde:.2f} (min {cfg.min_sde})")
+            return ("fail_threshold", None, period, t0, duration, None)
+
 
     # single-like gate: mask and continue, but don't save
     if n_transits_obs <= 1:
@@ -412,7 +419,7 @@ def using_BLS_search(time, flux, flux_err=None, intransit=None, period_grid = No
             # fails = 0
             # accepted-only rule
 
-            print('accepted period')
+            print(f'accepted period:  P={ev.period_days:.4f} d')
             accepted_events.append(ev)
 
             intransit |= transit_mask(time, period, duration, t0, cfg.transit_mask_base_buffer_days)

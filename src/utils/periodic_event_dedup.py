@@ -49,10 +49,27 @@ def _hdi16(c: PlanetCandidate, var_name: str, fallback=None):
     except Exception:
         return fallback
 
-def _period(c: PlanetCandidate) -> Optional[float]:
-    p = getattr(c, "period_days", None)
-    return None if p is None else float(p)
+# def _period(c: PlanetCandidate) -> Optional[float]:
+#     p = getattr(c, "period_days", None)
+#     return None if p is None else float(p)
 
+
+def _period(c):
+    p = getattr(c, "period_days", None)
+    if p is not None:
+        try:
+            return float(p)
+        except:
+            pass
+
+    # fallback to pymc if available (optional)
+    summary = getattr(c, "pymc_summary", None)
+    if isinstance(summary, dict) and "Per" in summary:
+        med = summary["Per"].get("median", None)
+        if med is not None:
+            return float(med)
+
+    return None
 
 def _duration_days(c: PlanetCandidate) -> Optional[float]:
     d = getattr(c, "duration_days", None)
@@ -63,10 +80,19 @@ def _duration_days(c: PlanetCandidate) -> Optional[float]:
     except Exception:
         return None
 
-def _depth_med(c: PlanetCandidate) -> Optional[float]:
-    d = _median(c, "depth", getattr(c, "depth", None))
-    return None if d is None else float(d)
+# def _depth_med(c: PlanetCandidate) -> Optional[float]:
+#     d = _median(c, "depth", getattr(c, "depth", None))
+#     return None if d is None else float(d)
 
+def _depth_med(c):
+    if getattr(c, "depth", None) is not None:
+        return float(c.depth)
+
+    summary = getattr(c, "pymc_summary", None)
+    if isinstance(summary, dict) and "depth" in summary:
+        return float(summary["depth"]["median"])
+
+    return None
 
 def _snr_med(c: PlanetCandidate) -> float:
     s = _median(c, "SNR", getattr(c, "snr", 0.0))
@@ -92,7 +118,7 @@ def _max_rhat(c: PlanetCandidate) -> Optional[float]:
     return max(vals) if vals else None
 
 
-def _observed_transit_times_days(c: PlanetCandidate) -> np.ndarray:
+def _observed_transit_times_days(c) -> np.ndarray:
     """
     Returns observed transit times (days) for clustering/dedup:
       - Single: [t0_days]
@@ -119,10 +145,10 @@ def _observed_transit_times_days(c: PlanetCandidate) -> np.ndarray:
 
 
 def _event_match_tolerance_days(
-    a: PlanetCandidate,
-    b: PlanetCandidate,
-    floor_days: float = 0.1,
-    frac_of_duration: float = 0.5,) -> float:
+    a, #event object
+    b, #event object
+    floor_days: float = 0.3,
+    frac_of_duration: float = 2.) -> float:
     da = _duration_days(a)
     db = _duration_days(b)
 
@@ -135,8 +161,8 @@ def _event_match_tolerance_days(
 
 
 def _shared_event_counts(
-    a: PlanetCandidate,
-    b: PlanetCandidate,
+    a, #event object
+    b, #event object
     tol_days: float,
 ) -> Tuple[int, int, int]:
     ta = _observed_transit_times_days(a)
@@ -164,8 +190,8 @@ def _shared_event_counts(
     return overlap, int(ta.size), int(tb.size)
 
 def _containment_fractions(
-    a: PlanetCandidate,
-    b: PlanetCandidate,
+    a, #event object
+    b, #event object
     tol_days: float,
 ) -> Tuple[float, float, int]:
     overlap, na, nb = _shared_event_counts(a, b, tol_days=tol_days)

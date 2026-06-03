@@ -87,7 +87,6 @@ def main(idx):
 
 
 if __name__ == "__main__":
-    print('what is wrong?')
 
     idx_str = os.environ.get("SLURM_ARRAY_TASK_ID") or (sys.argv[1] if len(sys.argv) > 1 else None)
     if idx_str is None:

@@ -78,7 +78,7 @@ def write_converged_fit_csv(target: Target, cand, fit_info):
     pd.DataFrame([row]).to_csv(out_path, index=False)
     return out_path
 
-def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="spawn"):
+def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,cores=None, mp_context="forkserver"):
     # Get all free random variables in the model
     
     slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
@@ -104,8 +104,8 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
         step = pm.DEMetropolisZ(vars=free_vars)#, target_accept=0.8) 
 
         run = attempt-1
-        draws = 4000+(2000*run)
-        tune = 5000+(2500*run)
+        draws = 3000
+        tune = 4000
 
         sample_kwargs = dict(
             step=step,
@@ -121,6 +121,8 @@ def sample_until_converged(model, max_attempts=3, rhat_threshold=1.1, chains=4,c
             sample_kwargs["mp_ctx"] = mp.get_context(mp_context)        
         if prev_trace is not None:
             sample_kwargs["initvals"] = _last_initvals_from_trace(prev_trace)
+            sample_kwargs['draws'] = int(draws/2)
+            sample_kwargs['tune'] = int(tune/2)
 
         try:
             
@@ -464,7 +466,7 @@ def pymc_fit_candidate(target, candidate, time, flux, unc, verbose=False, keep_l
 
     with model:
         try:
-            trace, fit_info = sample_until_converged(model, mp_context="forkserver", max_attempts=max_runs)
+            trace, fit_info = sample_until_converged(model, mp_context="fork", max_attempts=max_runs)
             summary = extract_summary_dataframe(trace)
 
             del trace
